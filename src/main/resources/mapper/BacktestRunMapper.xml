@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.etfmomentum.dao.BacktestRunMapper">
+
+    <select id="selectAllOrdered" resultType="com.etfmomentum.entity.BacktestRun">
+        SELECT * FROM backtest_run ORDER BY created_at DESC
+    </select>
+
+    <select id="selectById" resultType="com.etfmomentum.entity.BacktestRun">
+        SELECT * FROM backtest_run WHERE run_id = #{runId}
+    </select>
+
+    <insert id="insert">
+        INSERT INTO backtest_run (run_id, purpose, status, data_type, strategy_code, strategy_version,
+            strategy_config_id, config_json, start_date, end_date, initial_cash, benchmark, message, note,
+            created_at, finished_at)
+        VALUES (#{runId}, #{purpose}, #{status}, #{dataType}, #{strategyCode}, #{strategyVersion},
+            #{strategyConfigId}, #{configJson}, #{startDate}, #{endDate}, #{initialCash}, #{benchmark}, #{message}, #{note},
+            #{createdAt}, #{finishedAt})
+    </insert>
+
+    <update id="updateStatus">
+        UPDATE backtest_run
+        SET status = #{status}, message = #{message}, note = #{note}, finished_at = #{finishedAt}
+        WHERE run_id = #{runId}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM backtest_run WHERE run_id = #{runId}
+    </delete>
+</mapper>

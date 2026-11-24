@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.etfmomentum.dao.DecisionRecordMapper">
+
+    <select id="selectByRunId" resultType="com.etfmomentum.entity.DecisionRecord">
+        SELECT * FROM decision_record WHERE run_id = #{runId} ORDER BY signal_date ASC, id ASC
+    </select>
+
+    <select id="selectByRunIdAndSignalDate" resultType="com.etfmomentum.entity.DecisionRecord">
+        SELECT * FROM decision_record WHERE run_id = #{runId} AND signal_date = #{signalDate}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO decision_record (run_id, signal_date, executed, defensive_triggered, defensive_reason, payload)
+        VALUES (#{runId}, #{signalDate}, #{executed}, #{defensiveTriggered}, #{defensiveReason}, #{payload})
+    </insert>
+
+    <insert id="insertBatch">
+        INSERT INTO decision_record (run_id, signal_date, executed, defensive_triggered, defensive_reason, payload) VALUES
+        <foreach collection="list" item="d" separator=",">
+            (#{d.runId}, #{d.signalDate}, #{d.executed}, #{d.defensiveTriggered}, #{d.defensiveReason}, #{d.payload})
+        </foreach>
+    </insert>
+
+    <delete id="deleteByRunId">
+        DELETE FROM decision_record WHERE run_id = #{runId}
+    </delete>
+</mapper>

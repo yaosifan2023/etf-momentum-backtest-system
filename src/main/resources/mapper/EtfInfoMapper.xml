@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.etfmomentum.dao.EtfInfoMapper">
+
+    <select id="selectAllOrderByCode" resultType="com.etfmomentum.entity.EtfInfo">
+        SELECT * FROM etf_info ORDER BY code
+    </select>
+
+    <select id="selectEnabled" resultType="com.etfmomentum.entity.EtfInfo">
+        SELECT * FROM etf_info WHERE enabled = TRUE ORDER BY code
+    </select>
+
+    <select id="selectByCode" resultType="com.etfmomentum.entity.EtfInfo">
+        SELECT * FROM etf_info WHERE code = #{code}
+    </select>
+
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM etf_info
+    </select>
+
+    <insert id="insert">
+        INSERT INTO etf_info (code, name, market, secid, category, defensive, benchmark, enabled, source, latest_date, bar_count, note)
+        VALUES (#{code}, #{name}, #{market}, #{secid}, #{category}, #{defensive}, #{benchmark}, #{enabled}, #{source}, #{latestDate}, #{barCount}, #{note})
+    </insert>
+
+    <update id="updateInfo">
+        UPDATE etf_info
+        SET name = #{name}, source = #{source}, latest_date = #{latestDate}, bar_count = #{barCount}
+        WHERE code = #{code}
+    </update>
+
+    <delete id="deleteByCode">
+        DELETE FROM etf_info WHERE code = #{code}
+    </delete>
+</mapper>

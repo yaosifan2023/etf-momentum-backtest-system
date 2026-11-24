@@ -1,0 +1,48 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: etf-momentum-system
+  datasource:
+    # 默认使用 H2 文件数据库(零配置,数据落盘在 ./data/db/)
+    url: jdbc:h2:file:./data/db/etfdb;AUTO_SERVER=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql:
+    init:
+      # 启动时执行 schema-h2.sql 建表(IF NOT EXISTS,可重复执行)
+      mode: always
+      platform: h2
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
+  jackson:
+    default-property-inclusion: non_null
+    time-zone: Asia/Shanghai
+
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    cache-enabled: false
+
+app:
+  ai:
+    # 智谱 GLM 密钥:留空则读取环境变量 ZHIPU_API_KEY,再退回 ./config/zhipu-key.txt
+    # 注意:config/zhipu-key.txt 是本地私有文件,提交作业前请删除!
+    api-key: ""
+    key-file: ./config/zhipu-key.txt
+    model: glm-5.3
+  data-dir: ./data
+  results-dir: ./results
+  fetch:
+    connect-timeout-ms: 15000
+    read-timeout-ms: 60000
+
+# 如需切换 MySQL:
+# 1. 先建库: CREATE DATABASE etf_momentum DEFAULT CHARACTER SET utf8mb4;
+# 2. 以 mysql profile 启动: java -jar app.jar --spring.profiles.active=mysql
+#    (账号密码见 application-mysql.yml,详见 README.txt)

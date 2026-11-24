@@ -1,0 +1,20 @@
+# ===== 私密文件(绝不上传)=====
+config/
+
+# ===== 运行时产物 =====
+target/
+data/
+results/
+*.log
+
+# ===== 本地内置工具链(体积大;Maven 可由启动脚本自动下载,JDK 见 README)=====
+.jdk/
+.maven/
+
+# ===== IDE =====
+.idea/
+*.iml
+.vscode/
+*.classpath
+*.project
+*.settings/

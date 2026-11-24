@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.etfmomentum.dao.EquityPointMapper">
+
+    <select id="selectByRunId" resultType="com.etfmomentum.entity.EquityPoint">
+        SELECT * FROM equity_point WHERE run_id = #{runId} ORDER BY trade_date ASC, id ASC
+    </select>
+
+    <select id="selectByRunIdAndSeries" resultType="com.etfmomentum.entity.EquityPoint">
+        SELECT * FROM equity_point WHERE run_id = #{runId} AND series_id = #{seriesId}
+        ORDER BY trade_date ASC, id ASC
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO equity_point (run_id, series_id, trade_date, nav, cash, position_value)
+        VALUES (#{runId}, #{seriesId}, #{tradeDate}, #{nav}, #{cash}, #{positionValue})
+    </insert>
+
+    <insert id="insertBatch">
+        INSERT INTO equity_point (run_id, series_id, trade_date, nav, cash, position_value) VALUES
+        <foreach collection="list" item="e" separator=",">
+            (#{e.runId}, #{e.seriesId}, #{e.tradeDate}, #{e.nav}, #{e.cash}, #{e.positionValue})
+        </foreach>
+    </insert>
+
+    <delete id="deleteByRunId">
+        DELETE FROM equity_point WHERE run_id = #{runId}
+    </delete>
+</mapper>

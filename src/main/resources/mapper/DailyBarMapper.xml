@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.etfmomentum.dao.DailyBarMapper">
+
+    <select id="selectByCodeOrderByDateAsc" resultType="com.etfmomentum.entity.DailyBar">
+        SELECT * FROM daily_bar WHERE code = #{code} ORDER BY trade_date ASC
+    </select>
+
+    <select id="selectByCodeBetween" resultType="com.etfmomentum.entity.DailyBar">
+        SELECT * FROM daily_bar
+        WHERE code = #{code} AND trade_date &gt;= #{from} AND trade_date &lt;= #{to}
+        ORDER BY trade_date ASC
+    </select>
+
+    <select id="selectTop60ByCodeOrderByDateDesc" resultType="com.etfmomentum.entity.DailyBar">
+        SELECT * FROM daily_bar WHERE code = #{code} ORDER BY trade_date DESC LIMIT 60
+    </select>
+
+    <select id="selectFirstByCodeOrderByDateAsc" resultType="com.etfmomentum.entity.DailyBar">
+        SELECT * FROM daily_bar WHERE code = #{code} ORDER BY trade_date ASC LIMIT 1
+    </select>
+
+    <select id="selectFirstByCodeOrderByDateDesc" resultType="com.etfmomentum.entity.DailyBar">
+        SELECT * FROM daily_bar WHERE code = #{code} ORDER BY trade_date DESC LIMIT 1
+    </select>
+
+    <select id="countByCode" resultType="long">
+        SELECT COUNT(*) FROM daily_bar WHERE code = #{code}
+    </select>
+
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM daily_bar
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO daily_bar (code, trade_date, open, high, low, close, volume, amount)
+        VALUES (#{code}, #{tradeDate}, #{open}, #{high}, #{low}, #{close}, #{volume}, #{amount})
+    </insert>
+
+    <insert id="insertBatch">
+        INSERT INTO daily_bar (code, trade_date, open, high, low, close, volume, amount) VALUES
+        <foreach collection="list" item="b" separator=",">
+            (#{b.code}, #{b.tradeDate}, #{b.open}, #{b.high}, #{b.low}, #{b.close}, #{b.volume}, #{b.amount})
+        </foreach>
+    </insert>
+
+    <update id="update">
+        UPDATE daily_bar
+        SET open = #{open}, high = #{high}, low = #{low}, close = #{close}, volume = #{volume}, amount = #{amount}
+        WHERE id = #{id}
+    </update>
+</mapper>

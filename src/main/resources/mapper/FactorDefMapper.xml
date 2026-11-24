@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.etfmomentum.dao.FactorDefMapper">
+
+    <select id="selectAll" resultType="com.etfmomentum.entity.FactorDef">
+        SELECT * FROM factor_def ORDER BY factor_id ASC
+    </select>
+
+    <select id="selectById" resultType="com.etfmomentum.entity.FactorDef">
+        SELECT * FROM factor_def WHERE factor_id = #{factorId}
+    </select>
+
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM factor_def
+    </select>
+
+    <insert id="insert">
+        INSERT INTO factor_def (factor_id, factor_name, factor_category, scope, meaning, formula, required_data,
+            input_freq, calc_freq, calc_params, min_history, output_desc, direction, data_caliber, missing_policy,
+            outlier_policy, standardization, neutralization, availability, source_name, source_url, source_detail,
+            candidate_source, limits, table_version)
+        VALUES (#{factorId}, #{factorName}, #{factorCategory}, #{scope}, #{meaning}, #{formula}, #{requiredData},
+            #{inputFreq}, #{calcFreq}, #{calcParams}, #{minHistory}, #{outputDesc}, #{direction}, #{dataCaliber}, #{missingPolicy},
+            #{outlierPolicy}, #{standardization}, #{neutralization}, #{availability}, #{sourceName}, #{sourceUrl}, #{sourceDetail},
+            #{candidateSource}, #{limits}, #{tableVersion})
+    </insert>
+</mapper>

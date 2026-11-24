@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.etfmomentum.dao.StrategyConfigMapper">
+
+    <select id="selectAllOrdered" resultType="com.etfmomentum.entity.StrategyConfig">
+        SELECT * FROM strategy_config ORDER BY created_at DESC, id DESC
+    </select>
+
+    <select id="selectById" resultType="com.etfmomentum.entity.StrategyConfig">
+        SELECT * FROM strategy_config WHERE id = #{id}
+    </select>
+
+    <select id="selectTopByNameOrderVersionDesc" resultType="com.etfmomentum.entity.StrategyConfig">
+        SELECT * FROM strategy_config WHERE name = #{name} ORDER BY version DESC LIMIT 1
+    </select>
+
+    <select id="existsById" resultType="boolean">
+        SELECT COUNT(*) &gt; 0 FROM strategy_config WHERE id = #{id}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO strategy_config (strategy_code, name, version, momentum_window, holding_count, rebalance_freq,
+            defensive_enabled, defensive_threshold, defensive_mode, defensive_asset, trend_filter_enabled, trend_window,
+            trend_threshold, commission_rate, minimum_commission, slippage_rate, initial_cash, benchmark_asset,
+            universe_note, note, params_json, created_at)
+        VALUES (#{strategyCode}, #{name}, #{version}, #{momentumWindow}, #{holdingCount}, #{rebalanceFreq},
+            #{defensiveEnabled}, #{defensiveThreshold}, #{defensiveMode}, #{defensiveAsset}, #{trendFilterEnabled}, #{trendWindow},
+            #{trendThreshold}, #{commissionRate}, #{minimumCommission}, #{slippageRate}, #{initialCash}, #{benchmarkAsset},
+            #{universeNote}, #{note}, #{paramsJson}, #{createdAt})
+    </insert>
+
+    <delete id="deleteById">
+        DELETE FROM strategy_config WHERE id = #{id}
+    </delete>
+</mapper>

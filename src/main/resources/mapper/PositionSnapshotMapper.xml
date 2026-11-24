@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.etfmomentum.dao.PositionSnapshotMapper">
+
+    <select id="selectByRunId" resultType="com.etfmomentum.entity.PositionSnapshot">
+        SELECT * FROM position_snapshot WHERE run_id = #{runId} ORDER BY trade_date ASC, id ASC
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO position_snapshot (run_id, series_id, trade_date, asset_id, quantity, weight)
+        VALUES (#{runId}, #{seriesId}, #{tradeDate}, #{assetId}, #{quantity}, #{weight})
+    </insert>
+
+    <insert id="insertBatch">
+        INSERT INTO position_snapshot (run_id, series_id, trade_date, asset_id, quantity, weight) VALUES
+        <foreach collection="list" item="p" separator=",">
+            (#{p.runId}, #{p.seriesId}, #{p.tradeDate}, #{p.assetId}, #{p.quantity}, #{p.weight})
+        </foreach>
+    </insert>
+
+    <delete id="deleteByRunId">
+        DELETE FROM position_snapshot WHERE run_id = #{runId}
+    </delete>
+</mapper>
