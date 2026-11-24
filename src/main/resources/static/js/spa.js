@@ -73,6 +73,17 @@ const helpers = { methods: { fmtPct, fmtNum, fmtMoney, fmtQty, signedClass } };
 /* AI 工具桥:各视图把可被 AI 修改的表单注册到这里,AI 面板通过它执行白名单操作 */
 const AI_BUS = Vue.reactive({ strategyForm: null, backtestForm: null });
 
+/* 工具风险分级:L2 持久化/资源操作需要用户确认后才执行 */
+const L2_TOOLS = new Set(["save_and_run_backtest", "run_sample_check", "refresh_market_data", "add_etf"]);
+const TOOL_LABELS = {
+  update_strategy_form: "修改策略表单参数", set_backtest_dates: "设置回测日期",
+  save_and_run_backtest: "保存策略并运行回测", run_sample_check: "运行 B 样本复算",
+  refresh_market_data: "联网抓取行情", add_etf: "添加 ETF 并抓取",
+  navigate: "切换页面", get_run_detail: "查询运行详情",
+  check_data_quality: "行情数据体检(服务端)", analyze_run: "回测深度诊断(服务端)",
+  generate_report: "生成研究报告(服务端)"
+};
+
 function badgeRun(r) {
   return r.purpose === "sample_check"
     ? '<span class="badge amber">样本复算</span>' : '<span class="badge teal">历史回测</span>';
@@ -190,6 +201,7 @@ const DataPage = {
             <button class="btn sm" :disabled="adding" @click="addEtf">{{ adding ? '抓取中…' : '＋ 添加并抓取' }}</button>
           </div>
         </div>
+        <button class="btn ghost" @click="aiCheckData">🤖 AI 检查行情数据质量</button>
         <button class="btn" :disabled="busy" @click="refreshAll">{{ busy ? '抓取中,请稍候…' : '⟳ 一键抓取全部候选池' }}</button>
         <label class="btn ghost" style="cursor:pointer">⬆ 导入 CSV
           <input type="file" accept=".csv" style="display:none" @change="importCsv">
@@ -282,6 +294,14 @@ const DataPage = {
         this.load();
       } catch (e) { this.log("添加失败:" + e.message, false); toast(e.message, "err"); }
       finally { this.adding = false; }
+    },
+    aiCheckData() {
+      this.$root.openAi();
+      this.$root.sendAi("检查所有 ETF 的行情数据质量,指出异常、缺失和覆盖不足,并给出是否可以运行回测的结论");
+    },
+    aiAnalyze(q) {
+      this.$root.openAi();
+      this.$root.sendAi(q);
     },
     async importCsv(input) {
       const file = input.files && input.files[0];
@@ -748,6 +768,11 @@ const ResultPage = {
         <a class="btn sm ghost" :href="'/api/runs/' + run.runId + '/export/trades.csv'">trades.csv</a>
         <a class="btn sm ghost" :href="'/api/runs/' + run.runId + '/export/decisions.csv'">decisions.csv</a>
         <button v-if="run.purpose !== 'sample_check'" class="btn sm ghost" @click="rerunZero">↻ 附加对照:零成本重跑</button>
+        <span style="flex:1"></span>
+        <button class="btn sm" style="background:linear-gradient(135deg,#0d6e8c,#0f766e)" @click="aiAnalyze('解释本次回测的表现与风险')">🤖 解释本次回测</button>
+        <button class="btn sm ghost" @click="aiAnalyze('分析本次回测最大回撤发生在什么区间,原因是什么')">📉 分析最大回撤</button>
+        <button class="btn sm ghost" @click="aiAnalyze('分析手续费对本次回测收益的影响')">💰 成本影响</button>
+        <button class="btn sm ghost" @click="aiAnalyze('为本次回测生成完整研究报告')">📄 生成研究报告</button>
       </div>
     </div>
 
@@ -1144,7 +1169,7 @@ const app = Vue.createApp({
       route: parseHash(),
       modal: MODAL,
       ai: { open: false, configured: true, loading: false, input: "", msgs: [],
-        permission: true, pos: null, dragging: false, dragOff: { x: 0, y: 0 } }
+        permission: true, pos: null, dragging: false, dragOff: { x: 0, y: 0 }, pending: null }
     };
   },
   computed: {
@@ -1166,12 +1191,38 @@ const app = Vue.createApp({
       return this.ai.pos
         ? { left: this.ai.pos.x + "px", top: this.ai.pos.y + "px", right: "auto", bottom: "auto" }
         : null;
+    },
+    suggestions() {
+      const p = this.route.name;
+      const map = {
+        overview: ["检查当前系统是否具备回测条件", "总结最近的回测结果"],
+        data: ["检查所有 ETF 的行情数据质量", "找出行情覆盖不足或异常的 ETF"],
+        factors: ["解释三个因子的公式和适用场景", "动量排名对策略意味着什么?"],
+        strategy: ["帮我生成一个月度调仓的稳健方案", "解释当前策略参数的作用"],
+        backtest: ["运行前帮我检查日期和数据覆盖", "设计一个动量窗口敏感性实验"],
+        result: ["解释本次回测的表现与风险", "分析最大回撤发生在什么区间", "生成完整研究报告"],
+        history: ["比较最近两次成功回测的结果", "总结这些实验说明什么"]
+      };
+      return map[p] || [];
     }
   },
   mounted() {
     window.addEventListener("hashchange", () => { this.route = parseHash(); });
     api("/api/ai/configured").then(r => { this.ai.configured = !!r.configured; }).catch(() => {});
     if (parseHash().params.ai === "1") this.ai.open = true;   // #/overview?ai=1 直接打开面板(演示用)
+    // 确认卡片按钮事件委托(v-html 内按钮无法直接绑定)
+    document.addEventListener("click", e => {
+      const b = e.target.closest("[data-ai-act]");
+      if (!b) return;
+      if (b.dataset.aiAct === "confirm") this.confirmAi();
+      else if (b.dataset.aiAct === "cancel") this.cancelAi();
+      else if (b.dataset.aiAct === "dl") {
+        const a = document.createElement("a");
+        a.href = b.dataset.aiUrl;
+        a.download = "";
+        a.click();
+      }
+    });
   },
   methods: {
     go(name) { location.hash = "#/" + name; },
@@ -1315,10 +1366,10 @@ const app = Vue.createApp({
         return "工具执行出错:" + e.message;
       }
     },
-    /* ===== 问答(含工具调用循环) ===== */
+    /* ===== 问答(工具分级:服务端计算 → L0/L1 直接执行 → L2 需确认) ===== */
     async sendAi(preset) {
       const q = (preset || this.ai.input || "").trim();
-      if (!q || this.ai.loading) return;
+      if (!q || this.ai.loading || this.ai.pending) return;
       this.ai.input = "";
       this.ai.msgs.push({ role: "user", html: esc(q) });
       this.ai.loading = true;
@@ -1333,27 +1384,134 @@ const app = Vue.createApp({
           method: "POST", body: JSON.stringify(Object.assign({ tools: this.ai.permission }, base))
         });
         let guard = 0;
-        while (res.pending && res.toolCalls && guard++ < 3) {
-          const results = [];
-          for (const tc of res.toolCalls) {
-            const out = await this.executeTool(tc.name, tc.arguments);
-            results.push({ id: tc.id, content: out });
-            this.ai.msgs.push({ role: "ai", html: "🔧 <b>已执行</b> · " + mdLite(String(out).slice(0, 400)) });
+        while (res.pending && guard++ < 3) {
+          const fe = res.toolCalls || [];
+          const l2 = fe.filter(t => L2_TOOLS.has(t.name));
+          if (l2.length) {
+            // 含持久化/资源操作:展示确认卡片,等待用户决定
+            this.ai.pending = { base, res };
+            this.ai.msgs.push({ role: "ai", html: this.confirmCardHtml(fe) });
+            this.ai.loading = false;
             this.scrollAi();
+            return;
           }
-          res = await api("/api/ai/chat", {
-            method: "POST", body: JSON.stringify(Object.assign({ toolCalls: res.toolCalls, toolResults: results }, base))
-          });
+          res = await this.dispatchTools(base, res);
         }
-        if (res.answer) {
-          this.ai.msgs.push({ role: "ai", html: mdLite(res.answer), plain: res.answer });
-        }
+        this.finishAi(res);
       } catch (e) {
         this.ai.msgs.push({ role: "ai", html: '<span class="muted">⚠ ' + esc(e.message) + "</span>" });
       } finally {
         this.ai.loading = false;
         this.scrollAi();
       }
+    },
+    /* 执行本轮前端工具并回传(含服务端工具结果中继),返回下一轮响应 */
+    async dispatchTools(base, res) {
+      this.noteBackend(res);
+      const results = [];
+      for (const tc of (res.toolCalls || [])) {
+        const out = await this.executeTool(tc.name, tc.arguments);
+        results.push({ id: tc.id, content: out });
+        this.ai.msgs.push({ role: "ai", html: "🔧 <b>已执行</b> · " + mdLite(String(out).slice(0, 400)) });
+        this.scrollAi();
+      }
+      const backendResults = res.backendResults || [];
+      const allCalls = (res.backendToolCalls || []).concat(res.toolCalls || []);
+      const allResults = backendResults.concat(results);
+      return await api("/api/ai/chat", {
+        method: "POST", body: JSON.stringify(Object.assign({ toolCalls: allCalls, toolResults: allResults }, base))
+      });
+    },
+    noteBackend(res) {
+      const bc = res.backendToolCalls || [];
+      for (const t of bc) {
+        this.ai.msgs.push({ role: "ai", html: "🧮 <b>服务端计算完成</b> · " + esc(TOOL_LABELS[t.name] || t.name)
+          + "<span class='muted'>(数值由 Java 业务层产生)</span>" });
+      }
+      // 报告生成完毕提供下载
+      for (const t of bc) {
+        if (t.name === "generate_report") {
+          const br = (res.backendResults || []).find(r => String(r.content || "").indexOf("/api/runs/") >= 0);
+          const m = br ? String(br.content).match(/\/api\/runs\/[\w]+\/export\/report\.md/) : null;
+          if (m) {
+            this.ai.msgs.push({ role: "ai",
+              html: "<button class='btn sm' data-ai-act='dl' data-ai-url='" + m[0] + "'>⬇ 下载 report.md</button>"
+                + " &nbsp;<a class='small' href='" + m[0] + "' target='_blank'>在新窗口打开</a>" });
+          }
+        }
+      }
+      this.scrollAi();
+    },
+    confirmCardHtml(fe) {
+      let rows = "";
+      for (const t of fe) {
+        const l2 = L2_TOOLS.has(t.name);
+        rows += "<div style='display:flex;gap:8px;align-items:baseline'>"
+          + "<span class='badge " + (l2 ? "amber" : "gray") + "'>" + (l2 ? "需确认" : "直接执行") + "</span>"
+          + "<span>" + esc(TOOL_LABELS[t.name] || t.name) + "</span>"
+          + "<span class='muted small mono'>" + esc(JSON.stringify(t.arguments || {})).slice(0, 120) + "</span></div>";
+      }
+      return "<div class='ai-confirm'><b>🔐 操作确认</b> —— AI 请求执行以下操作:<div style='margin:8px 0'>"
+        + rows + "</div><div class='small muted' style='margin-bottom:8px'>持久化/联网操作需你确认;确认后继续,取消则告知 AI 未执行。</div>"
+        + "<button class='btn sm' data-ai-act='confirm'>✓ 确认执行</button> "
+        + "<button class='btn sm danger' data-ai-act='cancel'>✕ 取消</button></div>";
+    },
+    async confirmAi() {
+      const p = this.ai.pending;
+      if (!p) return;
+      this.ai.pending = null;
+      this.ai.loading = true;
+      try {
+        let res = await this.dispatchTools(p.base, p.res);
+        let guard = 0;
+        while (res.pending && guard++ < 3) {
+          const fe = res.toolCalls || [];
+          if (fe.some(t => L2_TOOLS.has(t.name))) {
+            this.ai.pending = { base: p.base, res };
+            this.ai.msgs.push({ role: "ai", html: this.confirmCardHtml(fe) });
+            this.ai.loading = false;
+            this.scrollAi();
+            return;
+          }
+          res = await this.dispatchTools(p.base, res);
+        }
+        this.finishAi(res);
+      } catch (e) {
+        this.ai.msgs.push({ role: "ai", html: '<span class="muted">⚠ ' + esc(e.message) + "</span>" });
+      } finally {
+        this.ai.loading = false;
+        this.scrollAi();
+      }
+    },
+    async cancelAi() {
+      const p = this.ai.pending;
+      if (!p) return;
+      this.ai.pending = null;
+      this.ai.loading = true;
+      try {
+        const results = (p.res.toolCalls || []).map(t => ({ id: t.id, content: "用户取消了该操作,未执行" }));
+        const backendResults = p.res.backendResults || [];
+        const allCalls = (p.res.backendToolCalls || []).concat(p.res.toolCalls || []);
+        const res = await api("/api/ai/chat", {
+          method: "POST",
+          body: JSON.stringify(Object.assign({ toolCalls: allCalls, toolResults: backendResults.concat(results) }, p.base))
+        });
+        this.finishAi(res);
+      } catch (e) {
+        this.ai.msgs.push({ role: "ai", html: '<span class="muted">⚠ ' + esc(e.message) + "</span>" });
+      } finally {
+        this.ai.loading = false;
+        this.scrollAi();
+      }
+    },
+    finishAi(res) {
+      if (res && res.answer) {
+        this.ai.msgs.push({ role: "ai", html: mdLite(res.answer), plain: res.answer });
+      }
+    },
+    newAiChat() {
+      this.ai.msgs = [];
+      this.ai.pending = null;
     },
     scrollAi() {
       this.$nextTick(() => {

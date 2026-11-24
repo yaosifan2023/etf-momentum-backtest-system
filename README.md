@@ -158,23 +158,36 @@ java -jar app.jar --spring.profiles.active=mysql   # 账号密码见 application
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/ai/configured` | 密钥是否已配置 |
-| POST | `/api/ai/chat` | 问答(body:`question/context/history/tools`);返回 `{answer}` 或 `{pending:true, toolCalls:[...]}` |
-| POST | `/api/ai/chat` | 工具结果回传(body 追加 `toolCalls/toolResults`)→ 最终回答 |
+| POST | `/api/ai/chat` | 问答(body:`question/context/history/tools`);返回 `{answer}` 或 `{pending:true, toolCalls:[前端工具], backendToolCalls/backendResults:[服务端已执行]}` |
+| POST | `/api/ai/chat` | 工具结果回传(body 追加 `toolCalls/toolResults`,含服务端结果)→ 最终回答 |
+| POST | `/api/ai/data-quality/check?abnormalThreshold=0.15` | 行情数据体检(程序规则,固定评分) |
+| GET | `/api/ai/analysis/run/{runId}` | 运行结构化诊断(回撤区间/成本/持仓统计) |
+| POST | `/api/ai/reports/run/{runId}` | 生成 Markdown 研究报告并落盘 |
 
 ## AI 分析助手
 
 - **形态**:右下角 🤖 悬浮球 → 可拖动聊天面板;🔒/🔓 一键锁定/放开操作权限
 - **分析**:自动携带当前页面数据(回测指标/交易/因子值)作为上下文
-- **执行**(智谱 function calling,前端白名单工具):
+- **执行**(function calling,工具分三级):
+  - **L2 持久化/联网操作**(保存并运行回测、样本复算、抓行情、添加 ETF)→ **弹出确认卡片,用户确认后才执行**
+  - **L1 表单操作**(改参数/设日期)→ 直接执行并在对话中记录变更
+  - **L0 只读** → 直接执行
 
-| 工具 | 作用 |
-|---|---|
-| `update_strategy_form` | 修改策略表单参数(窗口/持仓/频率/防御/费率…) |
-| `set_backtest_dates` | 设置回测起止日期 |
-| `save_and_run_backtest` | 保存当前表单为新版本并立即运行回测 |
-| `run_sample_check` | 运行 B 样本复算 |
-| `refresh_market_data` / `add_etf` | 抓取行情 / 添加 ETF |
-| `navigate` / `get_run_detail` | 切换页面 / 查询运行指标 |
+| 工具 | 级别 | 执行位置 | 作用 |
+|---|---|---|---|
+| `update_strategy_form` | L1 | 前端 | 修改策略表单参数 |
+| `set_backtest_dates` | L1 | 前端 | 设置回测起止日期 |
+| `save_and_run_backtest` | L2 | 前端 | 保存新版本并立即运行回测 |
+| `run_sample_check` | L2 | 前端 | 运行 B 样本复算 |
+| `refresh_market_data` / `add_etf` | L2 | 前端 | 抓取行情 / 添加 ETF |
+| `navigate` / `get_run_detail` | L0 | 前端 | 切换页面 / 查询运行指标 |
+| `check_data_quality` | L0 | **服务端** | 行情数据体检(覆盖/缺失/OHLC/异常涨跌/重复,固定评分规则) |
+| `analyze_run` | L0 | **服务端** | 回测深度诊断:回撤区间(峰值/谷底/修复日)+成本+持仓统计 |
+| `generate_report` | L0 | **服务端** | 生成 Markdown 研究报告并落盘 results/{runId}/report.md |
+
+**计算与解释分离**:所有指标/异常/回撤区间由 Java 业务层计算(DataQualityService / ReportService),AI 只解释结果,禁止编数 —— 系统提示词与服务端工具白名单双重约束;每次工具调用写入审计日志。
+
+页面级 AI 入口:数据页「🤖 AI 检查行情数据质量」、结果页「解释本次回测 / 分析最大回撤 / 成本影响 / 生成研究报告」。
 
 - **密钥安全**:密钥只存服务端,前端与页面源码不出现;优先级 `application.yml` > 环境变量 `ZHIPU_API_KEY` > `config/zhipu-key.txt`(该文件已在 `.gitignore` 中,**永远不会上传**)。配置方法:
 

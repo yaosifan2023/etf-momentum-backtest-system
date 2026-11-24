@@ -6,6 +6,11 @@
         SELECT * FROM position_snapshot WHERE run_id = #{runId} ORDER BY trade_date ASC, id ASC
     </select>
 
+    <select id="selectByRunIdAndSeries" resultType="com.etfmomentum.entity.PositionSnapshot">
+        SELECT * FROM position_snapshot WHERE run_id = #{runId} AND series_id = #{seriesId}
+        ORDER BY trade_date ASC, id ASC
+    </select>
+
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO position_snapshot (run_id, series_id, trade_date, asset_id, quantity, weight)
         VALUES (#{runId}, #{seriesId}, #{tradeDate}, #{assetId}, #{quantity}, #{weight})

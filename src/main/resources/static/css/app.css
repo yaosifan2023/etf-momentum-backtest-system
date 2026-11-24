@@ -303,6 +303,16 @@ pre.code {
 }
 .ai-quick button:hover { background: var(--teal-soft); border-color: var(--teal-bright); }
 .ai-input { display: flex; gap: 8px; padding: 11px 13px; border-top: 1px solid var(--line); background: #fff; }
+
+/* AI 操作确认卡片 */
+.ai-confirm {
+  border: 1.5px solid #f3c989; background: #fffaf0; border-radius: 11px;
+  padding: 11px 13px; font-size: 12.5px; width: 100%;
+}
+.ai-confirm .badge { transform: translateY(-1px); }
+
+/* AI 面板页脚建议 */
+.ai-panel .ai-quick { padding: 0 13px 9px; background: #f6f9fa; }
 .ai-input textarea {
   flex: 1; resize: none; border: 1.5px solid var(--line); border-radius: 10px;
   padding: 8px 11px; font-size: 13px; font-family: inherit; height: 42px; line-height: 1.5;

@@ -12,6 +12,8 @@ public interface PositionSnapshotMapper {
 
     List<PositionSnapshot> selectByRunId(@Param("runId") String runId);
 
+    List<PositionSnapshot> selectByRunIdAndSeries(@Param("runId") String runId, @Param("seriesId") String seriesId);
+
     int insert(PositionSnapshot p);
 
     int insertBatch(List<PositionSnapshot> list);

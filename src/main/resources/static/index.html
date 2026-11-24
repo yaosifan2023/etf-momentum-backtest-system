@@ -58,19 +58,24 @@
     <div class="ai-head" @mousedown="aiDragStart">
       <div class="avatar">🤖</div>
       <div class="t">
-        <b>AI 分析助手</b>
-        <span>{{ ai.configured ? (ai.permission ? 'GLM · 可分析 · 可操作页面' : 'GLM · 仅分析(已锁定)') : '未配置密钥' }} · ⠿ 拖动</span>
+        <b>AI 研究助手</b>
+        <span>{{ ai.configured ? (ai.permission ? 'GLM · 可分析可操作' : 'GLM · 仅分析(已锁定)') : '未配置密钥' }}
+          · 页面:{{ currentTitle }}{{ route.name === 'result' ? ' · ' + (route.params.run_id || '') : '' }} · ⠿ 拖动</span>
       </div>
+      <button title="新建对话(清空当前上下文)" @click="newAiChat">🗑</button>
       <button :title="ai.permission ? '已允许 AI 修改页面表单与执行操作,点击锁定' : 'AI 仅分析,点击放开操作权限'"
               @click="ai.permission = !ai.permission">{{ ai.permission ? '🔓' : '🔒' }}</button>
       <button title="收起" @click="ai.open = false">✕</button>
     </div>
     <div class="ai-msgs" ref="aiMsgs">
       <div v-if="!ai.msgs.length" class="msg ai muted" style="color:#94a3b8;font-size:12px">
-        直接输入问题:可让我分析页面数据,也可以说「把动量窗口改成60并运行回测」「添加515790并抓取行情」。
+        直接输入问题:可让我体检数据、分析回测、生成报告,也可以说「把动量窗口改成60并运行回测」。
       </div>
       <div v-for="(m, i) in ai.msgs" :key="i" class="msg" :class="m.role" v-html="m.html"></div>
       <div v-if="ai.loading" class="msg ai"><span class="typing"><i></i><i></i><i></i></span></div>
+    </div>
+    <div class="ai-quick" v-if="suggestions.length && !ai.pending">
+      <button v-for="s in suggestions" :key="s" @click="sendAi(s)">{{ s }}</button>
     </div>
     <div class="ai-input">
       <textarea v-model="ai.input" placeholder="分析数据 / 修改配置 / 执行操作…" @keydown.enter.exact.prevent="sendAi()"></textarea>

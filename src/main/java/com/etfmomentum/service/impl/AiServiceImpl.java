@@ -1,9 +1,14 @@
 package com.etfmomentum.service.impl;
 
 import com.etfmomentum.common.BadRequestException;
+import com.etfmomentum.dao.BacktestRunMapper;
 import com.etfmomentum.service.AiService;
+import com.etfmomentum.service.DataQualityService;
+import com.etfmomentum.service.ReportService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -30,16 +35,23 @@ import java.util.Map;
 @Service
 public class AiServiceImpl implements AiService {
 
+    private static final Logger log = LoggerFactory.getLogger(AiServiceImpl.class);
     private static final String API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
     private static final String SYSTEM_PROMPT =
-            "你是「量化回测分析助手」,嵌在 ETF 动量轮动回测系统页面右下角,既能分析数据也能替用户执行操作。\n"
-            + "分析时:基于页面数据摘要回答,数值引用准确、结论克制、指出局限(样本内表现不代表未来、成本口径、参数敏感性),不构成投资建议。\n"
+            "你是「量化研究助手」,嵌在 ETF 动量轮动回测系统页面右下角,既能分析数据也能替用户执行操作。\n"
+            + "分析时:基于页面数据摘要与工具返回的真实结果回答,数值引用准确、结论克制、指出局限(样本内表现不代表未来、成本口径、参数敏感性),不构成投资建议。\n"
+            + "重要:所有指标/异常/因子数值只能来自页面上下文或工具结果,禁止自行估算或编造;缺数据时如实说明。\n"
+            + "回答统一结构:结论→证据(真实数值)→解释→风险/局限→下一步建议。\n"
             + "操作时:用户要求修改策略参数、设置回测区间、运行回测、抓取行情、添加ETF、切换页面时,调用对应工具而不是只给文字建议;"
+            + "分析数据质量用 check_data_quality,深入分析某次回测用 analyze_run,生成研究报告用 generate_report;"
             + "多个操作可在一次回复中并行调用;工具结果返回后,用一两句话确认做了什么(旧值→新值)。"
             + "回答用简体中文,简洁专业,适当用要点列表。";
 
     private final ObjectMapper om;
     private final HttpClient http;
+    private final DataQualityService dataQualityService;
+    private final ReportService reportService;
+    private final BacktestRunMapper runMapper;
 
     @Value("${app.ai.api-key:}")
     private String apiKey;
@@ -50,9 +62,13 @@ public class AiServiceImpl implements AiService {
     @Value("${app.ai.model:glm-5.3}")
     private String model;
 
-    public AiServiceImpl(ObjectMapper om) {
+    public AiServiceImpl(ObjectMapper om, DataQualityService dataQualityService, ReportService reportService,
+                         BacktestRunMapper runMapper) {
         this.om = om;
         this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
+        this.dataQualityService = dataQualityService;
+        this.reportService = reportService;
+        this.runMapper = runMapper;
     }
 
     @Override
@@ -71,7 +87,9 @@ public class AiServiceImpl implements AiService {
             body.put("tools", toolDefs());
         }
         JsonNode message = callZhipu(body);
-        return parseAssistant(message);
+        Map<String, Object> res = parseAssistant(message);
+        splitBackendTools(res);
+        return res;
     }
 
     @Override
@@ -119,7 +137,111 @@ public class AiServiceImpl implements AiService {
         Map<String, Object> body = baseBody();
         body.put("messages", messages);
         JsonNode message = callZhipu(body);
-        return parseAssistant(message);
+        Map<String, Object> res = parseAssistant(message);
+        // 审计:记录本轮工具调用与问题(不含密钥)
+        log.info("[AI审计] question={} toolCalls={} results={}", clip(question, 60),
+                toolCalls == null ? 0 : toolCalls.size(), toolResults == null ? 0 : toolResults.size());
+        return res;
+    }
+
+    // ==================== 后端工具执行(确定性计算) ====================
+
+    /** 后端白名单:这些工具在服务端直接调用业务层执行,AI 只解释结果 */
+    private static final java.util.Set<String> BACKEND_TOOLS = java.util.Set.of(
+            "check_data_quality", "analyze_run", "generate_report");
+
+    @SuppressWarnings("unchecked")
+    private void splitBackendTools(Map<String, Object> res) {
+        Object pendingObj = res.get("pending");
+        if (!Boolean.TRUE.equals(pendingObj)) {
+            return;
+        }
+        List<Map<String, Object>> calls = (List<Map<String, Object>>) res.get("toolCalls");
+        if (calls == null) {
+            return;
+        }
+        List<Map<String, Object>> frontend = new ArrayList<>();
+        List<Map<String, Object>> backendCalls = new ArrayList<>();
+        List<Map<String, String>> backendResults = new ArrayList<>();
+        for (Map<String, Object> tc : calls) {
+            String name = String.valueOf(tc.get("name"));
+            if (!BACKEND_TOOLS.contains(name)) {
+                frontend.add(tc);
+                continue;
+            }
+            backendCalls.add(tc);
+            String content;
+            try {
+                content = executeBackendTool(name, (Map<String, Object>) tc.get("arguments"));
+            } catch (Exception e) {
+                content = "工具执行出错:" + e.getMessage();
+            }
+            Map<String, String> r = new LinkedHashMap<>();
+            r.put("id", String.valueOf(tc.get("id")));
+            r.put("content", content);
+            backendResults.add(r);
+            log.info("[AI审计] 后端工具 {} 执行完成,结果 {} 字符", name, content.length());
+        }
+        res.put("toolCalls", frontend);
+        res.put("backendToolCalls", backendCalls);
+        res.put("backendResults", backendResults);
+    }
+
+    private String executeBackendTool(String name, Map<String, Object> args) {
+        if ("check_data_quality".equals(name)) {
+            double th = 0.15;
+            if (args != null && args.get("abnormalReturnThreshold") instanceof Number) {
+                th = ((Number) args.get("abnormalReturnThreshold")).doubleValue();
+            }
+            Map<String, Object> report = dataQualityService.check(th);
+            return "数据体检结果(JSON,评分与异常由程序规则产生):\n" + clip(om.valueToTree(report).toString(), 4000);
+        }
+        if ("analyze_run".equals(name)) {
+            String runId = args != null && args.get("runId") != null ? String.valueOf(args.get("runId")) : null;
+            if (runId == null || runId.isBlank()) {
+                List<BacktestRunLite> runs = latestHistoricalRuns(1);
+                if (runs.isEmpty()) {
+                    return "没有可分析的历史回测运行";
+                }
+                runId = runs.get(0).runId;
+            }
+            Map<String, Object> a = reportService.analyzeRun(runId);
+            return "运行诊断结果(JSON,含回撤区间/成本/持仓统计,全部来自程序计算):\n"
+                    + clip(om.valueToTree(a).toString(), 5000);
+        }
+        if ("generate_report".equals(name)) {
+            String runId = args != null && args.get("runId") != null ? String.valueOf(args.get("runId")) : null;
+            if (runId == null || runId.isBlank()) {
+                List<BacktestRunLite> runs = latestHistoricalRuns(1);
+                if (runs.isEmpty()) {
+                    return "没有可生成报告的历史回测运行";
+                }
+                runId = runs.get(0).runId;
+            }
+            Map<String, Object> rep = reportService.generateReport(runId);
+            String md = String.valueOf(rep.get("markdown"));
+            return "研究报告已生成并保存到 " + rep.get("file") + "。下载地址:" + rep.get("downloadPath")
+                    + "。报告内容(节选):\n" + clip(md, 2500);
+        }
+        return "未知后端工具:" + name;
+    }
+
+    private static class BacktestRunLite {
+        String runId;
+        BacktestRunLite(String runId) { this.runId = runId; }
+    }
+
+    private List<BacktestRunLite> latestHistoricalRuns(int n) {
+        List<BacktestRunLite> list = new ArrayList<>();
+        for (com.etfmomentum.entity.BacktestRun r : runMapper.selectAllOrdered()) {
+            if ("historical_backtest".equals(r.getPurpose()) && "SUCCESS".equals(r.getStatus())) {
+                list.add(new BacktestRunLite(r.getRunId()));
+                if (list.size() >= n) {
+                    break;
+                }
+            }
+        }
+        return list;
     }
 
     // ==================== 内部工具 ====================
@@ -265,6 +387,13 @@ public class AiServiceImpl implements AiService {
                 prop("page", "string", "页面:overview/data/factors/strategy/backtest/history/result")));
         tools.add(tool("get_run_detail", "查询某次回测运行的详细信息(不传runId则查最近一次)",
                 prop("runId", "string", "运行ID(可选)")));
+        // 以下工具在服务端直接执行(确定性计算),前端不参与
+        tools.add(tool("check_data_quality", "对候选池全部ETF执行行情数据体检(覆盖/缺失/OHLC/异常涨跌/重复),返回程序计算的评分与异常清单;AI 据此解释",
+                prop("abnormalReturnThreshold", "number", "单日涨跌幅异常阈值,小数,默认0.15(可选)")));
+        tools.add(tool("analyze_run", "深入诊断某次回测:指标+最大回撤区间(峰值/谷底/修复日)+成本+交易持仓统计+防御触发次数;全部由程序计算",
+                prop("runId", "string", "运行ID(可选,默认最近一次成功的历史回测)")));
+        tools.add(tool("generate_report", "为某次回测生成完整Markdown研究报告并保存到 results/{runId}/report.md,前端提供下载",
+                prop("runId", "string", "运行ID(可选,默认最近一次成功的历史回测)")));
         return tools;
     }
 
