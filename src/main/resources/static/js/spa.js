@@ -43,10 +43,21 @@ function toast(msg, type) {
   setTimeout(() => el.remove(), 4200);
 }
 
-const MODAL = Vue.reactive({ open: false, title: "", body: "", width: null });
+const MODAL = Vue.reactive({ open: false, title: "", body: "", width: null, trigger: null });
 function openModal(title, body, width) {
+  MODAL.trigger = document.activeElement;   // 关闭后焦点回到触发入口
   MODAL.title = title; MODAL.body = body; MODAL.width = width || null; MODAL.open = true;
 }
+function closeModal() {
+  MODAL.open = false;
+  if (MODAL.trigger && typeof MODAL.trigger.focus === "function") MODAL.trigger.focus();
+  MODAL.trigger = null;
+}
+/* 收起页面上的下拉菜单与说明浮层 */
+function closeMenus() {
+  document.querySelectorAll("details.menu[open]").forEach(d => { d.open = false; });
+}
+function statusText(s) { return s === "SUCCESS" ? "成功" : (s === "FAILED" ? "失败" : "运行中"); }
 
 /* 轻量 Markdown:加粗 / 列表 / 换行 */
 function mdLite(s) {
@@ -68,7 +79,8 @@ const METRIC_FMT = {
   sharpe: v => fmtNum(v, 3), turnover: v => fmtNum(v, 2),
   trade_count: v => fmtQty(v), total_cost: v => fmtMoney(v)
 };
-const helpers = { methods: { fmtPct, fmtNum, fmtMoney, fmtQty, signedClass } };
+const helpers = { methods: { fmtPct, fmtNum, fmtMoney, fmtQty, signedClass,
+  aiAnalyze(q) { this.$root.openAi(); this.$root.sendAi(q); } } };
 
 /* AI 工具桥:各视图把可被 AI 修改的表单注册到这里,AI 面板通过它执行白名单操作 */
 const AI_BUS = Vue.reactive({ strategyForm: null, backtestForm: null });
@@ -84,97 +96,98 @@ const TOOL_LABELS = {
   generate_report: "生成研究报告(服务端)"
 };
 
-function badgeRun(r) {
-  return r.purpose === "sample_check"
-    ? '<span class="badge amber">样本复算</span>' : '<span class="badge teal">历史回测</span>';
-}
-function badgeStatus(s) {
-  return s === "SUCCESS" ? '<span class="badge green">SUCCESS</span>'
-    : '<span class="badge red">' + esc(s) + "</span>";
-}
-
 /* ================= 视图:概览 ================= */
 const OverviewView = {
   mixins: [helpers],
   template: `
   <div>
-    <div class="hero">
-      <div class="eyebrow">COURSE PROJECT · T03.01 相对动量轮动</div>
-      <h2>ETF 相对动量是否延续?扣除切换成本后表现如何?</h2>
-      <p>每周最后一个交易日收盘后,对候选池 ETF 按 W 日动量排名,持有前 K 只;防御开关触发时转入现金/防御资产。信号 T 日 15:05 产生,T+1 09:30 开盘价含滑点成交,与单资产买入持有对照。</p>
-      <div class="chips">
-        <span class="chip">Vue 3 前端</span><span class="chip">Spring Boot 3.3</span>
-        <span class="chip">MyBatis</span><span class="chip">东方财富行情</span><span class="chip">AI 助手 · GLM</span>
+    <section class="hero" aria-label="研究课题">
+      <div>
+        <h2>ETF 动量轮动</h2>
+        <p v-if="error">概览加载失败：{{ error }}</p>
+        <p v-else>对候选 ETF 按相对动量排名，回测轮动策略扣除交易成本后的表现。</p>
+        <div class="hero-actions">
+          <button class="btn" :disabled="loading" @click="primaryAction">{{ error ? '重试' : (loading ? '加载中…' : primaryLabel) }}</button>
+          <a class="btn ghost" href="#/history">查看运行历史</a>
+        </div>
       </div>
-    </div>
-
-    <div class="callout" v-if="banner" v-html="banner"></div>
-
-    <div class="grid c4">
-      <div class="stat"><div class="row1"><span class="k">真实 ETF 资产</span><span class="icon" style="background:#e6f5f2">🗂️</span></div>
-        <div class="v">{{ ov.realEtfCount || "-" }}<small> 只</small></div></div>
-      <div class="stat"><div class="row1"><span class="k">行情记录总数</span><span class="icon" style="background:#e3ecf3">📊</span></div>
-        <div class="v">{{ (ov.barCount||0).toLocaleString('zh-CN') }}</div></div>
-      <div class="stat"><div class="row1"><span class="k">数据覆盖</span><span class="icon" style="background:#fef3c7">📅</span></div>
-        <div class="v" style="font-size:15px;padding-top:6px">{{ ov.coverageStart ? ov.coverageStart + ' ~ ' + ov.coverageEnd : '未下载' }}</div></div>
-      <div class="stat"><div class="row1"><span class="k">回测运行次数</span><span class="icon" style="background:#dcfce7">▶️</span></div>
-        <div class="v">{{ ov.runCount || 0 }}</div></div>
-    </div>
-
-    <div class="card" style="margin-top:16px">
-      <h3><span class="dot"></span>快速开始</h3>
-      <div class="grid c4">
-        <button class="btn" @click="$root.go('data')">① 下载行情数据</button>
-        <button class="btn ghost" @click="$root.go('backtest')">② 运行历史回测</button>
-        <button class="btn ghost" @click="runSample">③ B 样本复算</button>
-        <button class="btn ghost" @click="$root.go('history')">④ 查看运行历史</button>
+      <div class="hero-side">
+        <div class="hs-row"><span class="hs-k">行情覆盖区间</span>
+          <span v-if="loading" class="skel on-dark" style="min-width:190px"></span>
+          <span v-else-if="error" class="hs-v">加载失败</span>
+          <span v-else class="hs-v">{{ coverageText }}</span></div>
+        <div class="hs-row"><span class="hs-k">B 样本复算</span>
+          <span v-if="loading" class="skel on-dark" style="min-width:120px"></span>
+          <span v-else class="hs-v" :class="!error && samplePassed ? 'ok' : 'warn'">{{ error ? '加载失败' : (samplePassed ? '已通过' : '未运行') }}
+            <button class="btn sm ghost" :disabled="sampling || loading" @click="runSample">{{ sampling ? '复算中…' : '运行复算' }}</button></span></div>
       </div>
+    </section>
+
+    <div class="grid c3">
+      <div class="stat"><div class="row1"><span class="k">真实 ETF</span><span class="icon"><v-icon name="layers" :size="18"></v-icon></span></div>
+        <div class="v"><span v-if="loading" class="skel"></span><template v-else>{{ error ? '—' : (ov.realEtfCount || 0) }}<small>只</small></template></div></div>
+      <div class="stat"><div class="row1"><span class="k">行情记录</span><span class="icon"><v-icon name="bars" :size="18"></v-icon></span></div>
+        <div class="v"><span v-if="loading" class="skel"></span><template v-else>{{ error ? '—' : (ov.barCount || 0).toLocaleString('zh-CN') }}</template></div></div>
+      <div class="stat"><div class="row1"><span class="k">回测运行</span><span class="icon"><v-icon name="play" :size="18"></v-icon></span></div>
+        <div class="v"><span v-if="loading" class="skel"></span><template v-else>{{ error ? '—' : (ov.runCount || 0) }}</template></div></div>
     </div>
 
     <div class="card">
-      <h3><span class="dot"></span>最近运行</h3>
-      <div class="tbl-wrap" v-if="runs.length">
-        <table class="tbl"><thead><tr><th>run_id</th><th>目的</th><th>数据</th><th>区间</th><th>状态</th><th>时间</th></tr></thead>
-        <tbody>
-          <tr v-for="r in runs.slice(0,6)" :key="r.runId" class="clickable" @click="$root.goResult(r.runId)">
-            <td class="mono">{{ r.runId }}</td><td v-html="badgeRun(r)"></td>
-            <td>{{ r.dataType === 'synthetic' ? '虚构' : '真实' }}</td>
-            <td>{{ (r.startDate||'') + ' ~ ' + (r.endDate||'') }}</td>
-            <td v-html="badgeStatus(r.status)"></td>
-            <td class="muted">{{ (r.createdAt||'').replace('T',' ').slice(0,19) }}</td>
-          </tr>
-        </tbody></table>
+      <div class="card-head"><h3>最近运行</h3><a v-if="runs.length > 6" class="link" href="#/history">查看全部</a></div>
+      <div v-if="runs.length" class="tbl-wrap">
+        <table class="tbl"><thead><tr><th>区间</th><th>运行类型</th><th>数据类型</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody><tr v-for="r in runs.slice(0, 6)" :key="r.runId">
+          <td class="num-l">{{ (r.startDate || '-') + ' 至 ' + (r.endDate || '-') }}</td>
+          <td>{{ r.purpose === 'sample_check' ? '样本复算' : '历史回测' }}</td>
+          <td>{{ r.dataType === 'synthetic' ? '虚构教学数据' : '真实历史数据' }}</td>
+          <td><span :class="'badge ' + (r.status === 'SUCCESS' ? 'green' : (r.status === 'FAILED' ? 'red' : 'amber'))">{{ statusText(r.status) }}</span>
+            <span v-if="r.status === 'FAILED' && r.message" class="small muted">{{ r.message }}</span></td>
+          <td><a v-if="r.status === 'SUCCESS'" class="link" :href="'#/result?run_id=' + r.runId">查看结果</a></td>
+        </tr></tbody></table>
       </div>
-      <div v-else class="callout warn" style="margin:0">暂无运行记录 —— 先跑一次「B 样本复算」验证引擎口径</div>
+      <div v-else class="empty"><span>暂无运行记录</span>
+        <button class="btn sm" :disabled="sampling" @click="runSample">{{ sampling ? '复算中…' : '运行 B 样本复算' }}</button></div>
     </div>
   </div>`,
-  data() { return { ov: {}, runs: [], banner: "" }; },
+  data() { return { ov: {}, runs: [], loading: true, error: "", sampling: false }; },
+  computed: {
+    coverageText() {
+      const o = this.ov;
+      return o.coverageStart ? o.coverageStart + " 至 " + o.coverageEnd : "未下载";
+    },
+    samplePassed() { return !!this.ov.sampleCheckPassed; },
+    primaryLabel() { return this.ov.dataReady ? "运行回测" : "下载行情"; }
+  },
   async mounted() { await this.reload(); },
   methods: {
-    badgeRun, badgeStatus,
     async reload() {
+      this.loading = true;
+      this.error = "";
       try {
-        this.ov = await api("/api/overview");
-        this.runs = await api("/api/runs");
-        const o = this.ov;
-        if (!o.dataReady) {
-          this.banner = "<b>行情数据尚未就绪</b> —— 请先前往 <a href='#/data'>数据管理</a> 一键抓取候选池行情(或添加任意 ETF 代码抓取)";
-        } else if (!o.sampleCheckPassed) {
-          this.banner = "<b>数据已就绪</b> —— 建议先执行一次「B 样本复算」,验证引擎与指南手工演算一致";
-        } else {
-          this.banner = "<b>✓ 样本复算已通过</b> —— 引擎口径与《实验要求》6.6 手工演算一致,可放心运行真实回测";
-        }
-      } catch (e) { toast(e.message, "err"); }
+        const res = await Promise.all([api("/api/overview"), api("/api/runs")]);
+        this.ov = res[0] || {};
+        this.runs = res[1] || [];
+      } catch (e) {
+        this.error = e.message;
+      } finally {
+        this.loading = false;
+      }
+    },
+    primaryAction() {
+      if (this.error) { this.reload(); return; }
+      this.$root.go(this.ov.dataReady ? "backtest" : "data");
     },
     async runSample() {
-      toast("正在运行样本复算…");
+      this.sampling = true;
       try {
         const res = await api("/api/backtest/sample-check", { method: "POST" });
         const pass = res.checks.filter(c => c.pass).length;
-        toast("样本复算完成:" + pass + "/" + res.checks.length + " 项通过", pass === res.checks.length ? "ok" : "err");
+        toast("样本复算完成：" + pass + "/" + res.checks.length + " 项通过", pass === res.checks.length ? "ok" : "err");
         this.$root.goResult(res.runId);
       } catch (e) { toast(e.message, "err"); }
+      finally { this.sampling = false; }
     },
+    statusText(s) { return s === "SUCCESS" ? "成功" : (s === "FAILED" ? "失败" : "运行中"); },
     aiContext() {
       const o = this.ov;
       let s = "【概览页】真实ETF " + o.realEtfCount + " 只,行情 " + o.barCount + " 条,覆盖 " + o.coverageStart + "~" + o.coverageEnd
@@ -193,63 +206,64 @@ const DataPage = {
   template: `
   <div>
     <div class="card">
-      <h3><span class="dot"></span>行情数据抓取(东方财富 · 日频 · 前复权)</h3>
-      <div class="form-row" style="align-items:flex-end">
-        <div class="field"><label>添加任意 ETF(6 位代码)</label>
-          <div style="display:flex;gap:8px">
-            <input v-model="addCode" placeholder="如 512690" style="width:120px" @keydown.enter="addEtf">
-            <button class="btn sm" :disabled="adding" @click="addEtf">{{ adding ? '抓取中…' : '＋ 添加并抓取' }}</button>
-          </div>
+      <div class="card-head">
+        <h3>行情数据<span class="card-sub">东方财富 · 日频 · 前复权</span></h3>
+        <div class="toolbar">
+          <button class="btn sm" :disabled="busy" @click="refreshAll">{{ busy ? '抓取中…' : '更新全部' }}</button>
+          <button class="btn sm ghost" @click="aiCheckData"><v-icon name="spark" :size="15"></v-icon>检查数据质量</button>
         </div>
-        <button class="btn ghost" @click="aiCheckData">🤖 AI 检查行情数据质量</button>
-        <button class="btn" :disabled="busy" @click="refreshAll">{{ busy ? '抓取中,请稍候…' : '⟳ 一键抓取全部候选池' }}</button>
-        <label class="btn ghost" style="cursor:pointer">⬆ 导入 CSV
-          <input type="file" accept=".csv" style="display:none" @change="importCsv">
-        </label>
-        <span class="small muted" style="padding-bottom:9px">CSV 格式:code,date,open,high,low,close,volume,amount(UTF-8)</span>
       </div>
-      <div class="fetch-log" v-if="logLines.length">
+      <div class="toolbar add-bar">
+        <div class="field"><label for="add-code">添加 ETF</label>
+          <div class="with-unit">
+            <input id="add-code" class="input" v-model="addCode" placeholder="6 位代码" maxlength="6" inputmode="numeric" @keydown.enter="addEtf">
+            <button class="btn sm ghost" :disabled="adding" @click="addEtf">{{ adding ? '抓取中…' : '添加并抓取' }}</button>
+          </div></div>
+        <div class="field"><label>导入 CSV</label>
+          <div class="with-unit">
+            <label class="btn sm ghost">选择文件<input type="file" accept=".csv" hidden @change="importCsv($event.target)"></label>
+            <details class="menu"><summary class="link-btn">格式要求</summary>
+              <div class="menu-panel menu-left">UTF-8 编码，首行为表头：<span class="mono">code,date,open,high,low,close,volume,amount</span>。日期格式 YYYY-MM-DD；同一代码同一日期的记录会覆盖更新。</div>
+            </details>
+          </div></div>
+      </div>
+      <div class="fetch-log" v-if="logLines.length" aria-live="polite">
         <div v-for="(l, i) in logLines" :key="i"><span class="ts">{{ l.ts }}</span><span :class="l.ok ? 'ok' : 'fail'">{{ l.text }}</span></div>
       </div>
-      <div style="height:12px"></div>
       <div class="tbl-wrap">
         <table class="tbl"><thead><tr>
-          <th>代码</th><th>名称</th><th>市场</th><th>类别</th><th>标记</th><th>来源</th>
-          <th>覆盖区间</th><th>条数</th><th>操作</th>
+          <th>代码</th><th>名称</th><th>覆盖区间</th><th class="num">条数</th><th>标记</th><th>操作</th>
         </tr></thead><tbody>
-          <tr v-for="r in etfs" :key="r.code" :class="{ clickable: r.barCount > 0 }" @click="preview(r.code)">
-            <td><b>{{ r.code }}</b></td><td>{{ r.name || '-' }}</td><td>{{ r.market }}</td><td>{{ r.category || '-' }}</td>
+          <tr v-for="r in etfs" :key="r.code">
+            <td><b>{{ r.code }}</b></td><td>{{ r.name || '-' }}</td>
+            <td class="num-l">{{ r.coverageStart ? r.coverageStart + ' 至 ' + r.coverageEnd : '无数据' }}</td>
+            <td class="num">{{ (r.barCount || 0).toLocaleString('zh-CN') }}</td>
             <td><span v-if="r.benchmark" class="badge teal">基准</span>
                 <span v-if="r.defensive" class="badge amber">防御</span>
-                <span v-if="!r.enabled" class="badge gray">停用</span></td>
-            <td><span :class="'badge ' + srcBadge(r.source)">{{ srcLabel(r.source) }}</span></td>
-            <td class="mono">{{ r.coverageStart ? r.coverageStart + ' ~ ' + r.coverageEnd : '无数据' }}</td>
-            <td class="num">{{ (r.barCount||0).toLocaleString('zh-CN') }}</td>
-            <td v-if="r.source === 'DEMO'">-</td>
-            <td v-else><button class="btn sm" @click.stop="refreshOne(r.code, $event)">更新</button></td>
+                <span v-if="!r.enabled" class="badge gray">停用</span>
+                <span :class="'badge ' + srcBadge(r.source)">{{ srcLabel(r.source) }}</span></td>
+            <td><button v-if="r.source !== 'DEMO'" class="link-btn" :disabled="busyCode === r.code" @click="refreshOne(r.code)">{{ busyCode === r.code ? '更新中…' : '更新' }}</button>
+                <button v-if="r.barCount > 0" class="link-btn" @click="preview(r.code)">预览</button></td>
           </tr>
         </tbody></table>
       </div>
-      <p class="hint">点击行可预览最近收盘价走势。抓取来源:东方财富 push2his 接口(klt=101 日线,fqt=1 前复权),
-        抓取后同时落盘 data/{code}.csv 供复现;停牌/缺失日无记录,因子计算按「窗口不足不参与排名」处理。
-        DEMO_A 为《实验要求》虚构教学资产,仅用于 B 样本复算。</p>
     </div>
 
     <div class="card" v-if="pv.bars && pv.bars.length">
-      <h3><span class="dot"></span>{{ pv.name }}({{ pv.code }})· 最近收盘价</h3>
+      <div class="card-head"><h3>{{ pv.name }}（{{ pv.code }}）收盘价</h3><button class="link-btn" @click="pv = {}">收起</button></div>
       <div ref="pvChart"></div>
       <div class="tbl-wrap" style="margin-top:12px;max-height:300px">
-        <table class="tbl"><thead><tr><th>日期</th><th>开盘</th><th>最高</th><th>最低</th><th>收盘</th><th>成交量(手)</th><th>成交额(元)</th></tr></thead>
+        <table class="tbl"><thead><tr><th>日期</th><th class="num">开盘</th><th class="num">最高</th><th class="num">最低</th><th class="num">收盘</th><th class="num">成交量（手）</th><th class="num">成交额（元）</th></tr></thead>
         <tbody><tr v-for="b in pv.bars.slice(-10).reverse()" :key="b.date">
-          <td>{{ b.date }}</td><td class="num">{{ fmtNum(b.open,3) }}</td><td class="num">{{ fmtNum(b.high,3) }}</td>
-          <td class="num">{{ fmtNum(b.low,3) }}</td><td class="num">{{ fmtNum(b.close,3) }}</td>
+          <td class="num">{{ b.date }}</td><td class="num">{{ fmtNum(b.open, 3) }}</td><td class="num">{{ fmtNum(b.high, 3) }}</td>
+          <td class="num">{{ fmtNum(b.low, 3) }}</td><td class="num">{{ fmtNum(b.close, 3) }}</td>
           <td class="num">{{ fmtQty(b.volume) }}</td><td class="num">{{ fmtMoney(b.amount) }}</td>
         </tr></tbody></table>
       </div>
     </div>
   </div>`,
   data() {
-    return { etfs: [], addCode: "", adding: false, busy: false, logLines: [], pv: {} };
+    return { etfs: [], addCode: "", adding: false, busy: false, busyCode: "", logLines: [], pv: {} };
   },
   async mounted() { await this.load(); },
   methods: {
@@ -261,14 +275,15 @@ const DataPage = {
     async load() {
       try { this.etfs = await api("/api/etfs"); } catch (e) { toast(e.message, "err"); }
     },
-    async refreshOne(code, ev) {
-      if (ev) { const b = ev.target; b.disabled = true; b.textContent = "抓取中…"; }
+    async refreshOne(code) {
+      this.busyCode = code;
       try {
         const res = await api("/api/data/refresh/" + code, { method: "POST" });
         this.log(res.message, true);
         toast(res.message, "ok");
-        this.load();
-      } catch (e) { this.log(code + " 抓取失败:" + e.message, false); toast(code + " 失败:" + e.message, "err"); }
+        await this.load();
+      } catch (e) { this.log(code + " 抓取失败：" + e.message, false); toast(code + " 失败：" + e.message, "err"); }
+      finally { this.busyCode = ""; }
     },
     async refreshAll() {
       this.busy = true;
@@ -323,8 +338,8 @@ const DataPage = {
         this.pv = await api("/api/etfs/" + code + "/bars?limit=120");
         this.$nextTick(() => {
           renderLineChart(this.$refs.pvChart, {
-            series: [{ name: "收盘价", color: "#0f766e", points: this.pv.bars.map(b => ({ label: b.date.slice(5), value: b.close })) }],
-            height: 250, yFmt: v => v.toFixed(3)
+            series: [{ name: "收盘价", color: "#0f766e", points: this.pv.bars.map(b => ({ label: b.date, value: b.close })) }],
+            height: 260, xLabel: d => d.slice(0, 7), base: null, yFmt: v => v.toFixed(3)
           });
         });
       } catch (e) { toast(e.message, "err"); }
@@ -356,52 +371,51 @@ const FactorsPage = {
   template: `
   <div>
     <div class="card" v-for="f in factors" :key="f.factorId">
-      <h3><span class="dot"></span>{{ f.factorName }}
-        <span class="badge teal">{{ f.factorCategory }}</span>
-        <span class="badge gray mono">{{ f.factorId }}</span></h3>
-      <div class="grid c2">
-        <div>
-          <p class="mt0"><b>公式</b>:<span class="mono">{{ f.formula }}</span></p>
-          <p><b>含义</b>:{{ f.meaning }}</p>
-          <p><b>参数</b>:<span class="mono small">{{ f.calcParams || '无' }}</span></p>
-          <p><b>定义来源</b>:
-            <a v-if="f.sourceUrl" :href="f.sourceUrl" target="_blank" rel="noopener">{{ f.sourceName }}</a>
-            <template v-else>{{ f.sourceName || '-' }}</template><br>
-            <span class="small muted">{{ f.sourceDetail || '' }}</span></p>
-        </div>
-        <div>
-          <p class="mt0"><b>缺失值</b>:{{ f.missingPolicy || '留空' }}</p>
-          <p><b>数据口径</b>:{{ f.dataCaliber || '留空' }}</p>
-          <p><b>使用限制</b>:{{ f.limits || '留空' }}</p>
-          <button class="btn sm ghost" @click="showDetail(f)">查看 22 列完整定义</button>
-        </div>
+      <div class="card-head">
+        <h3>{{ f.factorName }}<span class="badge teal">{{ f.factorCategory }}</span><span class="badge gray mono">{{ f.factorId }}</span></h3>
+        <a v-if="f.sourceUrl" class="link" :href="f.sourceUrl" target="_blank" rel="noopener">查看定义来源</a>
       </div>
+      <p class="mt0">{{ f.meaning }}</p>
+      <dl class="meta">
+        <div><dt>公式</dt><dd class="mono">{{ f.formula }}</dd></div>
+      </dl>
+      <dl class="meta" style="margin-top:10px">
+        <div><dt>参数</dt><dd class="mono">{{ f.calcParams || '无' }}</dd></div>
+        <div><dt>定义来源</dt><dd>{{ f.sourceName }}<span v-if="f.sourceDetail" class="muted">，{{ f.sourceDetail }}</span></dd></div>
+      </dl>
+      <details class="more"><summary>完整定义（22 列）</summary>
+        <dl class="def">
+          <div v-for="[k, label] in fieldCols" :key="k"><dt>{{ label }}</dt>
+            <dd>{{ f[k] === null || f[k] === undefined || f[k] === '' ? '留空' : f[k] }}</dd></div>
+        </dl>
+      </details>
     </div>
 
     <div class="card">
-      <h3><span class="dot"></span>因子实时计算预览(与回测引擎同一实现)</h3>
+      <div class="card-head"><h3>因子计算</h3></div>
       <div class="form-row">
-        <div class="field"><label>资产</label><select v-model="calc.code">
+        <div class="field"><label for="calc-code">资产</label><select id="calc-code" v-model="calc.code">
           <option v-for="e in etfs.filter(e => e.barCount > 0)" :key="e.code" :value="e.code">{{ e.code }} {{ e.name }}</option>
         </select></div>
-        <div class="field"><label>因子</label><select v-model="calc.factor">
+        <div class="field"><label for="calc-factor">因子</label><select id="calc-factor" v-model="calc.factor">
           <option v-for="f in factors" :key="f.factorId" :value="f.factorId">{{ f.factorName }}</option>
         </select></div>
-        <div class="field"><label>窗口(交易日)</label><input v-model.number="calc.window" type="number" min="2" max="500"></div>
-        <button class="btn" style="align-self:flex-end" @click="calcFactor">计算最近 30 期</button>
+        <div class="field"><label for="calc-window">窗口</label><div class="with-unit">
+          <input id="calc-window" v-model.number="calc.window" type="number" min="2" max="500"><span class="unit">交易日</span></div></div>
+        <button class="btn" @click="calcFactor">计算最近 30 期</button>
       </div>
       <div ref="calcChart"></div>
       <div class="tbl-wrap" style="margin-top:12px;max-height:340px" v-if="calcRows.length">
-        <table class="tbl"><thead><tr><th>日期</th><th>收盘价</th><th>因子值</th></tr></thead><tbody>
+        <table class="tbl"><thead><tr><th>日期</th><th class="num">收盘价</th><th class="num">因子值</th></tr></thead><tbody>
           <tr v-for="r in calcRows" :key="r.date">
-            <td>{{ r.date }}</td><td class="num">{{ fmtNum(r.close, 4) }}</td>
+            <td class="num">{{ r.date }}</td><td class="num">{{ fmtNum(r.close, 4) }}</td>
             <td class="num"><b v-if="r.value !== null">{{ fmtNum(r.value, 6) }}</b><span v-else class="badge gray">NA</span></td>
           </tr>
         </tbody></table>
       </div>
     </div>
   </div>`,
-  data() { return { factors: [], etfs: [], calc: { code: "", factor: "g01_mom_n", window: 20 }, calcRows: [] }; },
+  data() { return { factors: [], etfs: [], calc: { code: "", factor: "g01_mom_n", window: 20 }, calcRows: [], fieldCols: FIELD_22 }; },
   async mounted() {
     try {
       this.factors = await api("/api/factors");
@@ -411,16 +425,6 @@ const FactorsPage = {
     } catch (e) { toast(e.message, "err"); }
   },
   methods: {
-    showDetail(f) {
-      let rows = "";
-      for (const [k, label] of FIELD_22) {
-        const v = f[k];
-        rows += "<tr><td style='width:170px;color:#64748b'>" + esc(label)
-          + "</td><td class='wrap'>" + esc(v === null || v === undefined || v === "" ? "(留空)" : v) + "</td></tr>";
-      }
-      openModal(esc(f.factorName) + " · 22 列规范定义",
-        '<div class="tbl-wrap" style="max-height:60vh"><table class="tbl"><tbody>' + rows + "</tbody></table></div>", 820);
-    },
     async calcFactor() {
       if (!this.calc.code) { toast("暂无可用资产数据", "err"); return; }
       try {
@@ -430,8 +434,8 @@ const FactorsPage = {
         this.$nextTick(() => {
           renderLineChart(this.$refs.calcChart, {
             series: [{ name: d.factorId + "(W=" + d.window + ")", color: "#0f766e",
-              points: d.rows.map(r => ({ label: r.date.slice(5), value: r.value })) }],
-            height: 230, yFmt: v => v.toFixed(4)
+              points: d.rows.map(r => ({ label: r.date, value: r.value })) }],
+            height: 260, xLabel: d => d.slice(5), base: null, yFmt: v => v.toFixed(4)
           });
         });
       } catch (e) { toast(e.message, "err"); }
@@ -448,73 +452,80 @@ const StrategyPage = {
   mixins: [helpers],
   template: `
   <div>
-    <div class="card">
-      <h3><span class="dot"></span>参数设置(策略编号 etf_mom_rotation)</h3>
-      <div class="form-row">
-        <div class="field"><label>策略名称</label><input v-model="f.name" style="min-width:220px"></div>
-        <div class="field"><label>动量窗口 W(交易日)</label><input v-model.number="f.momentumWindow" type="number" min="2" max="500"></div>
-        <div class="field"><label>持有数量 K(只)</label><input v-model.number="f.holdingCount" type="number" min="1" max="10"></div>
-        <div class="field"><label>调仓频率</label>
-          <select v-model="f.rebalanceFreq">
-            <option value="WEEKLY">每周最后一个交易日</option>
-            <option value="MONTHLY">每月最后一个交易日</option>
-          </select></div>
+    <div class="split">
+      <div class="card">
+        <h3>参数设置</h3>
+        <div class="form-row">
+          <div class="field" style="flex:1 1 220px"><label for="f-name">策略名称</label><input id="f-name" v-model="f.name"></div>
+          <div class="field" style="flex:1 1 220px"><label for="f-note">备注</label><input id="f-note" v-model="f.note" placeholder="可选"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label for="f-w">动量窗口</label>
+            <div class="with-unit"><input id="f-w" v-model.number="f.momentumWindow" type="number" min="2" max="500"><span class="unit">交易日</span></div></div>
+          <div class="field"><label for="f-k">持有数量</label>
+            <div class="with-unit"><input id="f-k" v-model.number="f.holdingCount" type="number" min="1" max="10"><span class="unit">只</span></div></div>
+          <div class="field"><label for="f-freq">调仓频率</label>
+            <select id="f-freq" v-model="f.rebalanceFreq"><option value="WEEKLY">每周</option><option value="MONTHLY">每月</option></select></div>
+        </div>
+        <div class="form-row">
+          <label class="checkline"><input type="checkbox" v-model="f.defensiveEnabled">防御开关</label>
+          <div class="field"><label for="f-dth">防御阈值</label><input id="f-dth" v-model.number="f.defensiveThreshold" type="number" step="0.01"></div>
+          <div class="field"><label for="f-dmode">防御模式</label>
+            <select id="f-dmode" v-model="f.defensiveMode"><option value="CASH">转现金</option><option value="ASSET">转防御资产</option></select></div>
+          <div class="field" v-show="f.defensiveMode === 'ASSET'"><label for="f-dasset">防御资产</label>
+            <select id="f-dasset" v-model="f.defensiveAsset"><option v-for="e in defensiveEtfs" :key="e.code" :value="e.code">{{ e.code }} {{ e.name }}</option></select></div>
+        </div>
+        <div class="form-row">
+          <label class="checkline"><input type="checkbox" v-model="f.trendFilterEnabled">趋势过滤</label>
+          <div class="field"><label for="f-tw">均线窗口</label>
+            <div class="with-unit"><input id="f-tw" v-model.number="f.trendWindow" type="number" min="2" max="500"><span class="unit">交易日</span></div></div>
+          <div class="field"><label for="f-tth">均线比值阈值</label><input id="f-tth" v-model.number="f.trendThreshold" type="number" step="0.01"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label for="f-fee">手续费率</label><input id="f-fee" v-model.number="f.commissionRate" type="number" step="0.0001"></div>
+          <div class="field"><label for="f-min">最低手续费</label>
+            <div class="with-unit"><input id="f-min" v-model.number="f.minimumCommission" type="number" step="0.01"><span class="unit">元</span></div></div>
+          <div class="field"><label for="f-slip">滑点率</label><input id="f-slip" v-model.number="f.slippageRate" type="number" step="0.0001"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label for="f-cash">初始资金</label>
+            <div class="with-unit"><input id="f-cash" v-model.number="f.initialCash" type="number" min="1000"><span class="unit">元</span></div></div>
+          <div class="field" style="flex:1 1 220px"><label for="f-bench">基准资产</label>
+            <select id="f-bench" v-model="f.benchmarkAsset" style="width:100%">
+              <option v-for="e in realEtfs" :key="e.code" :value="e.code">{{ e.code }} {{ e.name }}</option></select></div>
+        </div>
+        <div class="toolbar">
+          <button class="btn" :disabled="saving" @click="save"><v-icon name="save" :size="16"></v-icon>{{ saving ? '保存中…' : '保存新版本' }}</button>
+          <button class="btn ghost" @click="previewBJson">预览 B_主策略.json</button>
+        </div>
       </div>
-      <div class="form-row">
-        <label class="checkline"><input type="checkbox" v-model="f.defensiveEnabled">防御开关</label>
-        <div class="field"><label>防御阈值(最强动量低于此值)</label><input v-model.number="f.defensiveThreshold" type="number" step="0.01"></div>
-        <div class="field"><label>防御模式</label>
-          <select v-model="f.defensiveMode" @change="onDefMode">
-            <option value="CASH">转现金</option><option value="ASSET">转防御资产</option>
-          </select></div>
-        <div class="field" v-show="f.defensiveMode === 'ASSET'"><label>防御资产</label>
-          <select v-model="f.defensiveAsset"><option v-for="e in defensiveEtfs" :key="e.code" :value="e.code">{{ e.code }} {{ e.name }}</option></select></div>
+
+      <div class="card">
+        <h3>规则预览</h3>
+        <dl class="rules"><template v-for="r in rules" :key="r.k"><dt>{{ r.k }}</dt><dd>{{ r.v }}</dd></template></dl>
       </div>
-      <div class="form-row">
-        <label class="checkline"><input type="checkbox" v-model="f.trendFilterEnabled">趋势过滤(均线比值 &lt; 阈值才可入选)</label>
-        <div class="field"><label>均线窗口 d</label><input v-model.number="f.trendWindow" type="number" min="2" max="500"></div>
-        <div class="field"><label>均线比值阈值</label><input v-model.number="f.trendThreshold" type="number" step="0.01"></div>
-      </div>
-      <div class="form-row">
-        <div class="field"><label>手续费率(双边,小数)</label><input v-model.number="f.commissionRate" type="number" step="0.0001"></div>
-        <div class="field"><label>最低手续费(元)</label><input v-model.number="f.minimumCommission" type="number" step="0.01"></div>
-        <div class="field"><label>滑点率(计入价格)</label><input v-model.number="f.slippageRate" type="number" step="0.0001"></div>
-        <div class="field"><label>初始资金(元)</label><input v-model.number="f.initialCash" type="number" min="1000"></div>
-        <div class="field"><label>基准资产</label><select v-model="f.benchmarkAsset">
-          <option v-for="e in realEtfs" :key="e.code" :value="e.code">{{ e.code }} {{ e.name }}</option></select></div>
-      </div>
-      <div class="form-row"><div class="field" style="flex:1"><label>备注</label>
-        <input v-model="f.note" placeholder="版本说明,可留空" style="width:100%"></div></div>
-      <button class="btn lg" :disabled="saving" @click="save">{{ saving ? '保存中…' : '💾 保存为新版本' }}</button>
-      <button class="btn ghost" style="margin-left:8px" @click="previewBJson">预览 B_主策略.json</button>
     </div>
 
     <div class="card">
-      <h3><span class="dot"></span>规则预览(随表单实时更新)</h3>
-      <div class="small" style="line-height:2.1" v-html="rulePreview"></div>
-    </div>
-
-    <div class="card">
-      <h3><span class="dot"></span>已保存的策略配置</h3>
-      <div class="tbl-wrap" v-if="list.length">
-        <table class="tbl"><thead><tr><th>名称</th><th>W</th><th>K</th><th>频率</th><th>防御</th><th>费率</th><th>滑点</th><th>基准</th><th>操作</th></tr></thead>
-        <tbody><tr v-for="c in list" :key="c.id">
+      <div class="card-head"><h3>已保存的配置</h3></div>
+      <div v-if="list.length" class="tbl-wrap">
+        <table class="tbl"><thead><tr>
+          <th>名称</th><th class="num">W</th><th class="num">K</th><th>频率</th><th>防御</th>
+          <th class="num">费率</th><th class="num">滑点</th><th>基准</th><th>操作</th>
+        </tr></thead><tbody><tr v-for="c in list" :key="c.id">
           <td><b>{{ c.name }}</b> <span class="badge gray">v{{ c.version }}</span></td>
-          <td>{{ c.momentumWindow }}</td><td>{{ c.holdingCount }}</td>
-          <td>{{ c.rebalanceFreq === 'MONTHLY' ? '月' : '周' }}</td>
-          <td>{{ c.defensiveEnabled ? (c.defensiveMode === 'ASSET' ? '转' + c.defensiveAsset : '转现金') : '关' }}</td>
+          <td class="num">{{ c.momentumWindow }}</td><td class="num">{{ c.holdingCount }}</td>
+          <td>{{ c.rebalanceFreq === 'MONTHLY' ? '每月' : '每周' }}</td>
+          <td>{{ c.defensiveEnabled ? (c.defensiveMode === 'ASSET' ? '转 ' + c.defensiveAsset : '转现金') : '关' }}</td>
           <td class="num">{{ fmtPct(c.commissionRate, 2) }}</td>
           <td class="num">{{ fmtPct(c.slippageRate, 2) }}</td>
-          <td>{{ c.benchmarkAsset }}</td>
-          <td>
-            <button class="btn sm" @click="loadCfg(c.id)">载入</button>
-            <button class="btn sm ghost" @click="showBJson(c.id)">B_主策略.json</button>
-            <button class="btn sm danger" @click="delCfg(c)">删除</button>
-          </td>
+          <td class="num">{{ c.benchmarkAsset }}</td>
+          <td><button class="link-btn" @click="loadCfg(c.id)">载入</button>
+            <button class="link-btn" @click="showBJson(c.id)">B_主策略.json</button>
+            <button class="link-btn danger" @click="delCfg(c)">删除</button></td>
         </tr></tbody></table>
       </div>
-      <div v-else class="callout warn" style="margin:0">暂无保存的策略配置</div>
-      <p class="hint">同名保存自动递增版本号;回测运行页按「名称+版本」引用,结果可追溯。</p>
+      <div v-else class="empty">还没有保存的策略配置</div>
     </div>
   </div>`,
   data() {
@@ -530,21 +541,20 @@ const StrategyPage = {
   computed: {
     realEtfs() { return this.etfs.filter(e => e.enabled && e.source !== "DEMO"); },
     defensiveEtfs() { return this.etfs.filter(e => e.defensive); },
-    rulePreview() {
+    rules() {
       const c = this.f;
       const freq = c.rebalanceFreq === "MONTHLY" ? "每月" : "每周";
-      return "<b>① 入选</b>:" + freq + "最后一个交易日收盘后,候选池 ETF 按 " + c.momentumWindow + " 日动量降序取前 "
-        + c.holdingCount + " 只(并列按代码升序);"
-        + (c.trendFilterEnabled ? "趋势过滤:均线比值(d=" + c.trendWindow + ")须 &lt; " + c.trendThreshold : "未启用趋势过滤")
-        + "<br><b>② 退出</b>:落选或防御触发时,次日开盘全部卖出;重新入选可再买入;已持有且仍在目标内不调仓(缓冲)"
-        + "<br><b>③ 防御</b>:" + (c.defensiveEnabled
-          ? "开启 —— 候选池为空或最强动量 &lt; " + c.defensiveThreshold + " 时,"
-            + (c.defensiveMode === "ASSET" ? "全部转入 " + c.defensiveAsset : "全部转为现金") : "关闭")
-        + "<br><b>④ 执行</b>:T 日 15:05 产生信号,T+1 09:30 开盘价成交;买价上浮 " + fmtPct(c.slippageRate)
-        + "、卖价下调 " + fmtPct(c.slippageRate) + ";双边手续费 " + fmtPct(c.commissionRate, 4)
-        + "<br><b>⑤ 持仓</b>:每只目标权重 1/" + c.holdingCount + ",按扣费后可负担最大整数份数买入,余款留现金;初始资金 "
-        + (+c.initialCash).toLocaleString("zh-CN") + " 元"
-        + "<br><b>⑥ 基准</b>:" + c.benchmarkAsset + " 买入持有,共同起点开盘买入、相同费用与估值口径,期末不强平";
+      return [
+        { k: "入选", v: freq + "最后一个交易日收盘后，按 " + c.momentumWindow + " 日动量降序取前 " + c.holdingCount + " 只，并列时按代码升序" },
+        { k: "趋势过滤", v: c.trendFilterEnabled ? "开启，均线比值（d=" + c.trendWindow + "）低于 " + c.trendThreshold + " 才可入选" : "关闭" },
+        { k: "退出", v: "落选或防御触发时，次日开盘全部卖出；重新入选可再买入；已持有且仍在目标内不调仓" },
+        { k: "防御", v: c.defensiveEnabled
+          ? "候选池为空或最强动量低于 " + c.defensiveThreshold + " 时，" + (c.defensiveMode === "ASSET" ? "全部转入 " + c.defensiveAsset : "全部转为现金")
+          : "关闭" },
+        { k: "成交", v: "T 日收盘产生信号，T+1 开盘价成交；滑点 " + fmtPct(c.slippageRate) + "，双边手续费 " + fmtPct(c.commissionRate, 4) },
+        { k: "持仓", v: "每只目标权重 1/" + c.holdingCount + "，按扣费后可负担的最大整数份数买入，余款留现金" },
+        { k: "基准", v: c.benchmarkAsset + " 买入持有，相同资金、区间与费用，期末不强平" }
+      ];
     }
   },
   async mounted() {
@@ -559,13 +569,12 @@ const StrategyPage = {
     if (AI_BUS.strategyForm === this.f) AI_BUS.strategyForm = null;
   },
   methods: {
-    onDefMode() {},
     pct(v, d) { return (v * 100).toFixed(d === undefined ? 4 : d) + "%"; },
     async save() {
       this.saving = true;
       try {
         const res = await api("/api/strategies", { method: "POST", body: JSON.stringify(this.f) });
-        toast(res.message, "ok");
+        toast("已保存为 v" + res.version, "ok");
         this.list = await api("/api/strategies");
       } catch (e) { toast("保存失败:" + e.message, "err"); }
       finally { this.saving = false; }
@@ -623,57 +632,58 @@ const BacktestPage = {
   template: `
   <div>
     <div class="card">
-      <h3><span class="dot"></span>运行历史回测(真实数据)</h3>
-      <div class="callout" v-if="dataWarn" v-html="dataWarn"></div>
+      <div class="card-head"><h3>历史回测<span class="card-sub">真实历史数据</span></h3>
+        <span v-if="coverage" class="card-sub">行情截至 {{ coverage }}</span></div>
+      <div class="callout warn" v-if="dataWarn" v-html="dataWarn"></div>
+      <div class="callout warn" v-if="ready && !strategies.length">还没有策略配置，请先到 <a href="#/strategy">策略配置</a> 保存。</div>
       <div class="form-row">
-        <div class="field"><label>策略配置</label><select v-model="r.configId" style="min-width:260px">
-          <option v-for="s in strategies" :key="s.id" :value="s.id">{{ s.name }} v{{ s.version }}(W={{ s.momentumWindow }},K={{ s.holdingCount }}{{ s.rebalanceFreq === 'MONTHLY' ? ',月调' : ',周调' }})</option>
-        </select></div>
-        <div class="field"><label>开始日期</label><input v-model="r.start" type="date"></div>
-        <div class="field"><label>结束日期</label><input v-model="r.end" type="date"></div>
+        <div class="field"><label for="r-cfg">策略配置</label>
+          <select id="r-cfg" v-model="r.configId" style="min-width:260px">
+            <option v-for="s in strategies" :key="s.id" :value="s.id">{{ s.name }} v{{ s.version }}</option>
+          </select></div>
+        <div class="field"><label for="r-start">开始日期</label><input id="r-start" v-model="r.start" type="date"></div>
+        <div class="field"><label for="r-end">结束日期</label><input id="r-end" v-model="r.end" type="date"></div>
       </div>
       <div class="form-row">
-        <label class="checkline"><input type="checkbox" v-model="r.zeroCost">附加对照:零费率零滑点</label>
-        <div class="field"><label>覆盖:动量窗口(可选)</label><input v-model.number="r.overrideMomentumWindow" type="number" placeholder="不改留空" min="2" max="500"></div>
-        <div class="field"><label>覆盖:持有数量(可选)</label><input v-model.number="r.overrideHoldingCount" type="number" placeholder="不改留空" min="1" max="10"></div>
+        <label class="checkline"><input type="checkbox" v-model="r.zeroCost">零成本对照（费率与滑点为 0）</label>
+        <div class="field"><label for="r-w">覆盖动量窗口</label>
+          <div class="with-unit"><input id="r-w" v-model.number="r.overrideMomentumWindow" type="number" placeholder="不改" min="2" max="500"><span class="unit">交易日</span></div></div>
+        <div class="field"><label for="r-k">覆盖持有数量</label>
+          <div class="with-unit"><input id="r-k" v-model.number="r.overrideHoldingCount" type="number" placeholder="不改" min="1" max="10"><span class="unit">只</span></div></div>
       </div>
-      <div class="form-row"><div class="field" style="flex:1"><label>运行备注</label>
-        <input v-model="r.note" placeholder="如:主方案 / 敏感性实验 W=60 / 零成本对照" style="width:100%"></div></div>
-      <button class="btn lg" :disabled="running" @click="run">{{ running ? '回测运行中…' : '▶ 运行回测' }}</button>
-      <span class="small muted" style="margin-left:10px">信号 T 日收盘 → 成交 T+1 开盘;含滑点与手续费</span>
-      <div style="height:14px"></div>
-      <div :class="'callout ' + statusCls" v-if="statusMsg" v-html="statusMsg"></div>
+      <div class="form-row"><div class="field" style="flex:1 1 100%"><label for="r-note">备注</label>
+        <input id="r-note" v-model="r.note" placeholder="可选"></div></div>
+      <div class="toolbar">
+        <button class="btn" :disabled="running || !r.configId" @click="run"><v-icon name="play" :size="16"></v-icon>{{ running ? '回测运行中…' : '运行回测' }}</button>
+      </div>
+      <div :class="'callout mt ' + statusCls" v-if="statusMsg" v-html="statusMsg"></div>
     </div>
 
     <div class="card">
-      <h3><span class="dot"></span>B 样本复算(引擎正确性验证)</h3>
-      <p class="mt0 small">使用《实验要求》6.6 虚构教学数据 DEMO_A(8 条日线)复算「均线比值持有策略」:
-        3月7日因子 0.866667 &lt; 1 → 3月10日开盘 12 元买入;3月11日因子恰等于 1 → 3月12日开盘 11 元卖出。引擎输出与手工演算逐项对照:</p>
-      <button class="btn" :disabled="sampling" @click="runSample">{{ sampling ? '复算中…' : '▶ 运行样本复算' }}</button>
-      <div style="height:12px"></div>
+      <div class="card-head"><h3>B 样本复算<span class="card-sub">虚构教学数据 · 核对引擎与手工演算</span></h3>
+        <button class="btn sm" :disabled="sampling" @click="runSample"><v-icon name="check" :size="15"></v-icon>{{ sampling ? '复算中…' : '运行样本复算' }}</button></div>
       <div v-if="checks" :class="'callout ' + (allPass ? 'ok' : 'err')">
-        <b>{{ allPass ? '全部通过 ✓' : '存在差异 ✗' }}</b>({{ passCount }}/{{ checks.length }} 项)
-        run_id:<span class="mono">{{ sampleRunId }}</span>
-        <a :href="'#/result?run_id=' + sampleRunId">查看完整结果 →</a>
-      </div>
-      <div class="tbl-wrap" style="margin-top:10px" v-if="checks">
-        <table class="tbl"><thead><tr><th>检查项</th><th>预期值(指南)</th><th>引擎实际值</th><th>容差</th><th>结果</th><th>说明</th></tr></thead>
+        <b>{{ allPass ? '全部通过' : '存在差异' }}</b>（{{ passCount }}/{{ checks.length }} 项）
+        <a :href="'#/result?run_id=' + sampleRunId">查看结果</a></div>
+      <div class="tbl-wrap" v-if="checks">
+        <table class="tbl"><thead><tr><th>检查项</th><th class="num">预期值</th><th class="num">实际值</th><th class="num">容差</th><th>结果</th><th>说明</th></tr></thead>
         <tbody><tr v-for="c in checks" :key="c.name">
           <td class="wrap">{{ c.name }}</td>
           <td class="num">{{ c.tolerance >= 0.5 ? c.expected : (+c.expected).toFixed(6) }}</td>
           <td class="num"><b>{{ c.actual === null ? 'NA' : (c.tolerance >= 0.5 ? c.actual : (+c.actual).toFixed(6)) }}</b></td>
           <td class="num">{{ c.tolerance >= 0.5 ? '整数' : c.tolerance }}</td>
-          <td><span :class="'badge ' + (c.pass ? 'green' : 'red')">{{ c.pass ? 'PASS' : 'FAIL' }}</span></td>
+          <td><span :class="'badge ' + (c.pass ? 'green' : 'red')">{{ c.pass ? '通过' : '未通过' }}</span></td>
           <td class="wrap small muted">{{ c.hint }}</td>
         </tr></tbody></table>
       </div>
+      <div v-else class="empty">还没有运行过复算</div>
     </div>
   </div>`,
   data() {
     return { strategies: [], r: { configId: null, start: "2019-01-01", end: "", zeroCost: false,
       overrideMomentumWindow: null, overrideHoldingCount: null, note: "" },
       running: false, statusMsg: "", statusCls: "",
-      sampling: false, checks: null, sampleRunId: "", dataWarn: "" };
+      sampling: false, checks: null, sampleRunId: "", dataWarn: "", coverage: "", ready: false };
   },
   computed: {
     allPass() { return this.checks && this.checks.every(c => c.pass); },
@@ -684,11 +694,11 @@ const BacktestPage = {
     try {
       const ov = await api("/api/overview");
       this.r.end = ov.coverageEnd || new Date().toISOString().slice(0, 10);
-      this.dataWarn = ov.dataReady
-        ? "当前数据覆盖:<b>" + ov.coverageStart + " ~ " + ov.coverageEnd + "</b>,共 " + (ov.barCount || 0).toLocaleString("zh-CN") + " 条;开始日期建议不早于覆盖起点后约 2 个月(为动量窗口留预热数据)"
-        : "<b>行情未就绪</b> —— 请先到 <a href='#/data'>数据管理</a> 抓取;或先运行下方 B 样本复算";
+      this.coverage = ov.coverageEnd || "";
+      if (!ov.dataReady) this.dataWarn = "<b>缺少行情数据</b>：请先到 <a href='#/data'>数据管理</a> 抓取行情";
       this.strategies = await api("/api/strategies");
       if (this.strategies.length) this.r.configId = this.strategies[0].id;
+      this.ready = true;
     } catch (e) { toast(e.message, "err"); }
   },
   unmounted() {
@@ -736,155 +746,192 @@ const ResultPage = {
   mixins: [helpers],
   template: `
   <div>
-    <div class="card" v-if="!run"><div class="callout err" style="margin:0">加载中或 run_id 无效…</div></div>
-    <template v-if="run">
-    <div class="card">
-      <h3><span class="dot"></span>运行信息
+    <teleport to="#topbar-extra">
+      <template v-if="run">
         <span :class="'badge ' + (run.purpose === 'sample_check' ? 'amber' : 'teal')">{{ run.purpose === 'sample_check' ? '样本复算' : '历史回测' }}</span>
-        <span :class="'badge ' + (run.dataType === 'synthetic' ? 'amber' : 'green')">{{ run.dataType === 'synthetic' ? '虚构教学数据' : '真实历史数据' }}</span>
-        <span :class="'badge ' + (run.status === 'SUCCESS' ? 'green' : 'red')">{{ run.status }}</span>
-      </h3>
-      <div class="grid c2 small" style="line-height:2">
-        <div>
-          run_id:<span class="mono">{{ run.runId }}</span><br>
-          策略:{{ run.strategyCode }} / v{{ run.strategyVersion }}<br>
-          评价区间:{{ run.startDate }} ~ {{ run.endDate }}(预热数据不计入评价)<br>
-          基准:{{ run.benchmark }}
+        <span :class="'badge ' + (run.dataType === 'synthetic' ? 'amber' : 'gray')">{{ run.dataType === 'synthetic' ? '虚构教学数据' : '真实历史数据' }}</span>
+        <span :class="'badge ' + statusBadge">{{ statusText }}</span>
+        <a class="btn sm" :href="'/api/runs/' + run.runId + '/export-all'"><v-icon name="download" :size="15"></v-icon>导出 ZIP</a>
+        <details class="menu"><summary class="btn sm ghost">更多<v-icon name="chevron" :size="14"></v-icon></summary>
+          <div class="menu-list">
+            <a v-for="f in exportFiles" :key="f" :href="'/api/runs/' + run.runId + '/export/' + f" @click="closeMenus()">{{ f }}</a>
+            <button v-if="canRerun" @click="rerunZero">零成本重跑</button>
+          </div>
+        </details>
+      </template>
+    </teleport>
+
+    <div v-if="loading" class="grid c4">
+      <div v-for="i in 4" :key="i" class="stat"><span class="skel"></span><div class="v"><span class="skel" style="min-width:130px"></span></div></div>
+    </div>
+
+    <div v-else-if="error" class="card">
+      <div class="callout err" style="margin:0">{{ error }}</div>
+      <div class="toolbar mt"><a class="btn sm ghost" href="#/history">返回运行历史</a><button class="btn sm" @click="reload">重试</button></div>
+    </div>
+
+    <template v-else-if="run">
+      <div class="run-bar">
+        <div class="run-sum">
+          <span>{{ run.strategyCode }} v{{ run.strategyVersion }}</span><span class="sep"></span>
+          <span>{{ run.startDate }} 至 {{ run.endDate }}</span><span class="sep"></span>
+          <span>基准 {{ benchLabel }}</span>
         </div>
-        <div>
-          策略参数:{{ stratDesc }}<br>
-          成本假设:手续费率 {{ fmtPct(costs.commission_rate, 4) }}(最低 {{ costs.minimum_commission || 0 }} 元),
-          滑点率 {{ fmtPct(costs.slippage_rate, 4) }}(计入成交价)<br>
-          <span v-if="run.note">备注:{{ run.note }}</span>
+        <button class="link-btn" :aria-expanded="cfgOpen ? 'true' : 'false'" @click="cfgOpen = !cfgOpen">运行配置</button>
+      </div>
+      <div class="cfg-panel" v-if="cfgOpen">
+        <dl class="meta">
+          <div><dt>run_id</dt><dd class="mono">{{ run.runId }}</dd></div>
+          <div><dt>策略参数</dt><dd>{{ stratDesc }}</dd></div>
+          <div><dt>初始资金</dt><dd>{{ fmtMoney(run.initialCash) }} 元</dd></div>
+          <div><dt>成本假设</dt><dd>双边手续费 {{ fmtPct(costs.commission_rate, 4) }}（最低 {{ costs.minimum_commission || 0 }} 元），滑点 {{ fmtPct(costs.slippage_rate, 4) }} 计入成交价</dd></div>
+          <div><dt>执行口径</dt><dd>信号在 T 日 15:05 收盘数据可用后产生，T+1 日 09:30 按开盘价成交；评价区间最后一个信号日若没有下一交易日，则不执行。</dd></div>
+          <div v-if="run.note"><dt>备注</dt><dd>{{ run.note }}</dd></div>
+        </dl>
+      </div>
+
+      <div v-if="run.status !== 'SUCCESS'" class="callout err">本次运行{{ statusText }}<span v-if="run.message">：{{ run.message }}</span></div>
+
+      <div class="grid c4">
+        <div class="stat"><div class="row1"><span class="k">策略累计收益</span><span class="icon"><v-icon name="up" :size="18"></v-icon></span></div>
+          <div class="v" :class="signedClass(mval('total_return', 'strategy'))">{{ fmtPct(mval('total_return', 'strategy'), 2) }}</div></div>
+        <div class="stat"><div class="row1"><span class="k">基准累计收益</span><span class="icon"><v-icon name="bars" :size="18"></v-icon></span></div>
+          <div class="v" :class="signedClass(mval('total_return', 'benchmark'))">{{ fmtPct(mval('total_return', 'benchmark'), 2) }}</div></div>
+        <div class="stat"><div class="row1"><span class="k">策略最大回撤</span><span class="icon"><v-icon name="down" :size="18"></v-icon></span></div>
+          <div class="v neg">{{ fmtPct(mval('max_drawdown', 'strategy'), 2) }}</div></div>
+        <div class="stat"><div class="row1"><span class="k">策略总手续费</span><span class="icon"><v-icon name="coins" :size="18"></v-icon></span></div>
+          <div class="v v-sm">{{ fmtMoney(mval('total_cost', 'strategy')) }}</div></div>
+      </div>
+
+      <section class="board" aria-label="净值画板">
+        <div class="board-head">
+          <h3>策略与基准净值</h3>
+          <div class="legend"><span class="lg"><i class="line"></i>策略</span><span class="lg"><i class="line dashed"></i>基准</span></div>
+          <span class="grow"></span>
+          <details class="menu"><summary class="link-btn">净值口径</summary>
+            <div class="menu-panel">净值 = 账户权益 ÷ 评价起点交易前的账户权益。初始净值 1 计入历史峰值与回撤，首日损益与交易费用已计入。</div>
+          </details>
+          <details class="menu"><summary class="btn sm ghost"><v-icon name="spark" :size="15"></v-icon>AI 解读</summary>
+            <div class="menu-list">
+              <button @click="aiAsk('解释本次回测的表现与风险')">解释本次回测</button>
+              <button @click="aiAsk('分析本次回测最大回撤发生在什么区间,原因是什么')">最大回撤分析</button>
+              <button @click="aiAsk('分析手续费对本次回测收益的影响')">手续费影响</button>
+              <button @click="aiAsk('为本次回测生成完整研究报告')">生成研究报告</button>
+            </div>
+          </details>
         </div>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
-        <a class="btn sm" :href="'/api/runs/' + run.runId + '/export-all'">⬇ 导出全部(ZIP)</a>
-        <a class="btn sm ghost" :href="'/api/runs/' + run.runId + '/export/run.json'">run.json</a>
-        <a class="btn sm ghost" :href="'/api/runs/' + run.runId + '/export/config.json'">config.json</a>
-        <a class="btn sm ghost" :href="'/api/runs/' + run.runId + '/export/metrics.csv'">metrics.csv</a>
-        <a class="btn sm ghost" :href="'/api/runs/' + run.runId + '/export/equity.csv'">equity.csv</a>
-        <a class="btn sm ghost" :href="'/api/runs/' + run.runId + '/export/positions.csv'">positions.csv</a>
-        <a class="btn sm ghost" :href="'/api/runs/' + run.runId + '/export/trades.csv'">trades.csv</a>
-        <a class="btn sm ghost" :href="'/api/runs/' + run.runId + '/export/decisions.csv'">decisions.csv</a>
-        <button v-if="run.purpose !== 'sample_check'" class="btn sm ghost" @click="rerunZero">↻ 附加对照:零成本重跑</button>
-        <span style="flex:1"></span>
-        <button class="btn sm" style="background:linear-gradient(135deg,#0d6e8c,#0f766e)" @click="aiAnalyze('解释本次回测的表现与风险')">🤖 解释本次回测</button>
-        <button class="btn sm ghost" @click="aiAnalyze('分析本次回测最大回撤发生在什么区间,原因是什么')">📉 分析最大回撤</button>
-        <button class="btn sm ghost" @click="aiAnalyze('分析手续费对本次回测收益的影响')">💰 成本影响</button>
-        <button class="btn sm ghost" @click="aiAnalyze('为本次回测生成完整研究报告')">📄 生成研究报告</button>
-      </div>
-    </div>
+        <div ref="navChart" class="board-body"></div>
+        <div class="board-foot">移动指针或用左右方向键查看某日数值</div>
+      </section>
 
-    <div class="grid c4">
-      <div class="stat"><div class="row1"><span class="k">策略累计收益</span><span class="icon" style="background:#dcfce7">📈</span></div>
-        <div class="v" :class="signedClass(mval('total_return','strategy'))">{{ fmtPct(mval('total_return','strategy'), 2) }}</div></div>
-      <div class="stat"><div class="row1"><span class="k">基准累计收益</span><span class="icon" style="background:#e3ecf3">📊</span></div>
-        <div class="v" :class="signedClass(mval('total_return','benchmark'))">{{ fmtPct(mval('total_return','benchmark'), 2) }}</div></div>
-      <div class="stat"><div class="row1"><span class="k">策略最大回撤</span><span class="icon" style="background:#fee2e2">📉</span></div>
-        <div class="v neg">{{ fmtPct(mval('max_drawdown','strategy'), 2) }}</div></div>
-      <div class="stat"><div class="row1"><span class="k">策略总手续费</span><span class="icon" style="background:#fef3c7">💰</span></div>
-        <div class="v" style="font-size:19px">{{ fmtMoney(mval('total_cost','strategy')) }}</div></div>
-    </div>
-
-    <div class="card" style="margin-top:16px">
-      <h3><span class="dot"></span>净值曲线(策略 vs 基准)</h3>
-      <div ref="navChart"></div>
-      <p class="hint">nav = 账户权益 ÷ 评价起点交易前权益;首点为初始净值 1,首日损益与费用已计入(指南 7.3 口径)。悬停查看逐日数值。</p>
-    </div>
-
-    <div class="card">
-      <h3><span class="dot"></span>指标对照</h3>
-      <div class="tbl-wrap">
-        <table class="tbl"><thead><tr><th>指标</th><th>策略</th><th>基准</th><th>差值(策略-基准)</th><th>单位</th></tr></thead>
-        <tbody><tr v-for="row in metricRows" :key="row.key">
-          <td><span :title="row.def" style="cursor:help;border-bottom:1px dashed #bbb">{{ row.label }} ⓘ</span></td>
-          <td class="num">{{ row.s === null ? 'NA' : row.fmt(row.s) }}</td>
-          <td class="num">{{ row.b === null ? 'NA' : row.fmt(row.b) }}</td>
-          <td class="num" v-html="row.diff"></td>
-          <td class="muted">{{ row.unit }}</td>
-        </tr></tbody></table>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="tabs">
-        <button :class="{ active: tab === 'trades' }" @click="tab = 'trades'">交易记录</button>
-        <button :class="{ active: tab === 'decisions' }" @click="tab = 'decisions'">信号决策</button>
-        <button :class="{ active: tab === 'positions' }" @click="tab = 'positions'">持仓快照</button>
-        <button :class="{ active: tab === 'equity' }" @click="tab = 'equity'">净值明细</button>
-      </div>
-
-      <div v-show="tab === 'trades'">
-        <p class="small muted mt0">点击任意一笔成交查看「这笔交易为什么发生」:当日因子值、排名、目标与实际执行。</p>
+      <div class="card">
+        <h3>指标对照</h3>
         <div class="tbl-wrap">
-          <table class="tbl"><thead><tr><th>信号时间</th><th>成交时间</th><th>资产</th><th>方向</th><th>数量</th><th>成交价</th><th>手续费</th><th>滑点</th><th>状态</th><th>原因</th></tr></thead>
-          <tbody><tr v-for="(t, i) in strategyTrades" :key="t.id || i" class="clickable" @click="explainTrade(i)">
-            <td>{{ (t.signalTime || '').replace('T',' ').slice(0,16) }}</td>
-            <td>{{ (t.executionTime || 'NA').replace('T',' ').slice(0,16) }}</td>
-            <td><b>{{ t.assetId }}</b></td>
-            <td><span :class="'badge ' + (t.side === 'buy' ? 'green' : 'red')">{{ t.side === 'buy' ? '买入' : '卖出' }}</span></td>
-            <td class="num">{{ fmtQty(t.quantity) }}</td>
-            <td class="num">{{ fmtNum(t.price, 4) }}</td>
-            <td class="num">{{ fmtMoney(t.fee) }}</td>
-            <td class="num">{{ fmtMoney(t.slippageCost) }}</td>
-            <td><span :class="'badge ' + (t.status === 'FILLED' ? 'green' : 'gray')">{{ t.status === 'FILLED' ? '成交' : '未成交' }}</span></td>
-            <td class="wrap small">{{ t.reason }}</td>
+          <table class="tbl"><thead><tr><th>指标</th><th class="num">策略</th><th class="num">基准</th><th class="num">差值（策略 − 基准）</th><th>单位</th></tr></thead>
+          <tbody><tr v-for="row in metricRows" :key="row.key">
+            <td><span class="def-tip" :title="row.def">{{ row.label }}</span></td>
+            <td class="num">{{ row.s === null ? 'NA' : row.fmt(row.s) }}</td>
+            <td class="num">{{ row.b === null ? 'NA' : row.fmt(row.b) }}</td>
+            <td class="num" v-html="row.diff"></td>
+            <td class="muted">{{ row.unit }}</td>
           </tr></tbody></table>
         </div>
       </div>
 
-      <div v-show="tab === 'decisions'">
-        <p class="small muted mt0">每个调仓信号日的决策记录;点击查看明细(因子值/排名/目标权重/防御触发)。</p>
-        <div class="tbl-wrap">
-          <table class="tbl"><thead><tr><th>信号日</th><th>防御触发</th><th>防御原因</th></tr></thead>
-          <tbody><tr v-for="d in decisions" :key="d.id || d.signalDate" class="clickable" @click="explainDate(d.signalDate)">
-            <td>{{ d.signalDate }}</td>
-            <td><span v-if="d.defensiveTriggered" class="badge amber">是</span><span v-else class="muted">否</span></td>
-            <td class="wrap small">{{ d.defensiveReason || '-' }}</td>
-          </tr></tbody></table>
+      <div class="card">
+        <div class="tabs" role="tablist" aria-label="回测明细" ref="tabs"
+             @keydown.right.prevent="nextTab(1)" @keydown.left.prevent="nextTab(-1)">
+          <button v-for="t in tabList" :key="t.key" role="tab" :aria-selected="tab === t.key ? 'true' : 'false'"
+                  :tabindex="tab === t.key ? 0 : -1" :class="{ active: tab === t.key }" @click="tab = t.key">{{ t.label }}</button>
         </div>
-      </div>
 
-      <div v-show="tab === 'positions'">
-        <div class="form-row"><div class="field"><label>选择日期(策略持仓)</label>
-          <select v-model="posDate" style="min-width:180px" @change="loadPositions">
-            <option v-for="d in posDates.slice().reverse()" :key="d" :value="d">{{ d }}</option>
-          </select></div></div>
-        <div class="tbl-wrap" v-if="posRows.length">
-          <table class="tbl"><thead><tr><th>系列</th><th>资产</th><th>数量</th><th>权重</th></tr></thead>
-          <tbody><tr v-for="p in posRows" :key="p.seriesId + p.assetId">
-            <td><span :class="'badge ' + (p.seriesId === 'strategy' ? 'teal' : 'amber')">{{ p.seriesId === 'strategy' ? '策略' : '基准' }}</span></td>
-            <td><b>{{ p.assetId }}</b></td><td class="num">{{ fmtQty(p.quantity) }}</td><td class="num">{{ fmtPct(p.weight, 2) }}</td>
-          </tr></tbody></table>
+        <div v-show="tab === 'trades'" role="tabpanel" aria-label="交易记录">
+          <div v-if="strategyTrades.length" class="tbl-wrap">
+            <table class="tbl dense"><thead><tr>
+              <th>信号时间</th><th>成交时间</th><th>资产</th><th>方向</th><th class="num">数量</th><th class="num">成交价</th>
+              <th class="num">手续费</th><th class="num">滑点成本</th><th>状态</th><th>原因</th><th>操作</th>
+            </tr></thead><tbody><tr v-for="(t, i) in strategyTrades" :key="t.id || i">
+              <td class="num">{{ (t.signalTime || '').replace('T', ' ').slice(0, 16) }}</td>
+              <td class="num">{{ (t.executionTime || 'NA').replace('T', ' ').slice(0, 16) }}</td>
+              <td><b>{{ t.assetId }}</b></td>
+              <td><span :class="'badge ' + (t.side === 'buy' ? 'green' : 'red')">{{ t.side === 'buy' ? '买入' : '卖出' }}</span></td>
+              <td class="num">{{ fmtQty(t.quantity) }}</td>
+              <td class="num">{{ fmtNum(t.price, 4) }}</td>
+              <td class="num">{{ fmtMoney(t.fee) }}</td>
+              <td class="num">{{ fmtMoney(t.slippageCost) }}</td>
+              <td><span :class="'badge ' + (t.status === 'FILLED' ? 'green' : 'gray')">{{ t.status === 'FILLED' ? '成交' : '未成交' }}</span></td>
+              <td class="wrap small">{{ t.reason }}</td>
+              <td><button v-if="t.status === 'FILLED'" class="link-btn" @click="explainTrade(i)">查看解释</button></td>
+            </tr></tbody></table>
+          </div>
+          <div v-else class="empty">策略没有成交记录</div>
         </div>
-        <div v-else class="callout warn" style="margin:0">该日无持仓(空仓/现金)</div>
-      </div>
 
-      <div v-show="tab === 'equity'">
-        <div class="tbl-wrap" style="max-height:420px">
-          <table class="tbl"><thead><tr><th>日期</th><th>策略净值</th><th>基准净值</th><th>策略现金</th><th>持仓市值</th></tr></thead>
-          <tbody><tr v-for="e in equityRecent" :key="e.date + e.seriesId">
-            <td>{{ e.date }}</td><td class="num">{{ fmtNum(e.navS, 6) }}</td><td class="num">{{ fmtNum(e.navB, 6) }}</td>
-            <td class="num">{{ fmtMoney(e.cash) }}</td><td class="num">{{ fmtMoney(e.pv) }}</td>
-          </tr></tbody></table>
+        <div v-show="tab === 'decisions'" role="tabpanel" aria-label="信号决策">
+          <div v-if="decisions.length" class="tbl-wrap">
+            <table class="tbl"><thead><tr><th>信号日</th><th>防御触发</th><th>防御原因</th><th>操作</th></tr></thead>
+            <tbody><tr v-for="d in decisions" :key="d.id || d.signalDate">
+              <td class="num">{{ d.signalDate }}</td>
+              <td><span :class="'badge ' + (d.defensiveTriggered ? 'amber' : 'gray')">{{ d.defensiveTriggered ? '是' : '否' }}</span></td>
+              <td class="wrap small">{{ d.defensiveReason || '-' }}</td>
+              <td><button class="link-btn" @click="explainDate(d.signalDate)">查看解释</button></td>
+            </tr></tbody></table>
+          </div>
+          <div v-else class="empty">没有信号决策记录</div>
+        </div>
+
+        <div v-show="tab === 'positions'" role="tabpanel" aria-label="持仓快照">
+          <div class="form-row"><div class="field"><label for="pos-date">持仓日期</label>
+            <select id="pos-date" v-model="posDate" style="min-width:180px" @change="loadPositions">
+              <option v-for="d in posDates.slice().reverse()" :key="d" :value="d">{{ d }}</option>
+            </select></div></div>
+          <div v-if="posRows.length" class="tbl-wrap">
+            <table class="tbl"><thead><tr><th>序列</th><th>资产</th><th class="num">数量</th><th class="num">权重</th></tr></thead>
+            <tbody><tr v-for="p in posRows" :key="p.seriesId + p.assetId">
+              <td><span :class="'badge ' + (p.seriesId === 'strategy' ? 'teal' : 'gray')">{{ p.seriesId === 'strategy' ? '策略' : '基准' }}</span></td>
+              <td><b>{{ p.assetId }}</b></td><td class="num">{{ fmtQty(p.quantity) }}</td><td class="num">{{ fmtPct(p.weight, 2) }}</td>
+            </tr></tbody></table>
+          </div>
+          <div v-else class="empty">该日没有持仓（空仓或现金）</div>
+        </div>
+
+        <div v-show="tab === 'equity'" role="tabpanel" aria-label="净值明细">
+          <div v-if="equityRecent.length" class="tbl-wrap" style="max-height:420px">
+            <table class="tbl"><thead><tr><th>日期</th><th class="num">策略净值</th><th class="num">基准净值</th><th class="num">策略现金</th><th class="num">持仓市值</th></tr></thead>
+            <tbody><tr v-for="e in equityRecent" :key="e.date">
+              <td class="num">{{ e.date }}</td><td class="num">{{ fmtNum(e.navS, 6) }}</td><td class="num">{{ fmtNum(e.navB, 6) }}</td>
+              <td class="num">{{ fmtMoney(e.cash) }}</td><td class="num">{{ fmtMoney(e.pv) }}</td>
+            </tr></tbody></table>
+          </div>
+          <div v-else class="empty">暂无净值数据</div>
         </div>
       </div>
-    </div>
     </template>
   </div>`,
   data() {
-    return { run: null, config: {}, costs: {}, metrics: [], equity: [], trades: [], decisions: [],
-      tab: "trades", posDates: [], posDate: "", posRows: [], equityRecent: [] };
+    return { runId: "", run: null, config: {}, costs: {}, metrics: [], equity: [], trades: [], decisions: [],
+      loading: true, error: "", cfgOpen: false,
+      tab: "trades", tabList: [{ key: "trades", label: "交易记录" }, { key: "decisions", label: "信号决策" },
+        { key: "positions", label: "持仓快照" }, { key: "equity", label: "净值明细" }],
+      exportFiles: ["run.json", "config.json", "metrics.csv", "equity.csv", "positions.csv", "trades.csv", "decisions.csv"],
+      posDates: [], posDate: "", posRows: [], equityRecent: [] };
   },
   computed: {
+    statusText() { return statusText(this.run && this.run.status); },
+    statusBadge() {
+      const s = this.run && this.run.status;
+      return s === "SUCCESS" ? "green" : (s === "FAILED" ? "red" : "amber");
+    },
+    canRerun() { return !!this.run && this.run.purpose !== "sample_check"; },
+    benchLabel() { return this.run ? String(this.run.benchmark || "").replace("buy_and_hold(", "买入持有（").replace(/\)$/, "）") : ""; },
+    chartHeight() { return window.innerWidth < 768 ? 260 : 340; },
     stratDesc() {
       const s = (this.config && this.config.strategy) || {};
-      if (s.momentum_window === undefined) return "均线比值持有策略(B 样本)";
-      return "W=" + s.momentum_window + ",K=" + s.holding_count + ","
-        + (s.rebalance_freq === "MONTHLY" ? "月调仓" : "周调仓")
-        + (s.defensive && s.defensive.enabled ? ",防御开(" + (s.defensive.mode === "ASSET" ? "转" + (s.defensive.asset || "") : "转现金")
-          + ",阈值 " + s.defensive.threshold + ")" : ",防御关");
+      if (s.momentum_window === undefined) return "均线比值持有策略（" + ((this.config.strategy || {}).threshold !== undefined ? "阈值 " + this.config.strategy.threshold : "") + "）";
+      return "W=" + s.momentum_window + "，K=" + s.holding_count + "，"
+        + (s.rebalance_freq === "MONTHLY" ? "每月调仓" : "每周调仓")
+        + (s.defensive && s.defensive.enabled ? "，防御开（" + (s.defensive.mode === "ASSET" ? "转 " + (s.defensive.asset || "") : "转现金")
+          + "，阈值 " + s.defensive.threshold + "）" : "，防御关");
     },
     strategyTrades() { return this.trades.filter(t => t.seriesId === "strategy"); },
     metricRows() {
@@ -914,43 +961,67 @@ const ResultPage = {
     }
   },
   async mounted() {
-    const runId = this.$root.route.params.run_id;
-    if (!runId) return;
-    try {
-      const detail = await api("/api/runs/" + runId);
-      this.run = detail.run;
-      this.config = detail.config || {};
-      this.costs = (detail.config && detail.config.costs) || {};
-      this.metrics = await api("/api/runs/" + runId + "/metrics");
-      this.equity = await api("/api/runs/" + runId + "/equity");
-      this.trades = await api("/api/runs/" + runId + "/trades");
-      this.decisions = await api("/api/runs/" + runId + "/decisions");
-      this.$nextTick(() => {
-        const strategy = this.equity.filter(e => e.seriesId === "strategy");
-        const bench = this.equity.filter(e => e.seriesId === "benchmark");
-        renderLineChart(this.$refs.navChart, {
-          series: [
-            { name: "策略(动量轮动)", color: "#0f766e", points: strategy.map(e => ({ label: e.tradeDate.slice(5), value: e.nav })) },
-            { name: "基准(买入持有)", color: "#d97706", points: bench.map(e => ({ label: e.tradeDate.slice(5), value: e.nav })) }
-          ],
-          height: 340, yFmt: v => v.toFixed(3)
-        });
-      });
-      const recent = strategy.slice(-30).reverse().map(e => {
-        const b = this.equity.find(x => x.seriesId === "benchmark" && x.tradeDate === e.tradeDate);
-        return { date: e.tradeDate, navS: e.nav, navB: b ? b.nav : null, cash: e.cash, pv: e.positionValue };
-      });
-      this.equityRecent = recent;
-      const pos = await api("/api/runs/" + runId + "/positions");
-      this.posDates = pos.dates || [];
-      this.posDate = this.posDates.length ? this.posDates[this.posDates.length - 1] : "";
-      this.posRows = pos.rows || [];
-    } catch (e) { toast(e.message, "err"); }
+    this.runId = this.$root.route.params.run_id || "";
+    await this.reload();
   },
   methods: {
+    async reload() {
+      this.loading = true;
+      this.error = "";
+      this.run = null;
+      if (!this.runId) { this.loading = false; this.error = "缺少 run_id，无法确定要查看的运行。"; return; }
+      try {
+        const id = this.runId;
+        const detail = await api("/api/runs/" + id);
+        this.run = detail.run;
+        this.config = detail.config || {};
+        this.costs = (detail.config && detail.config.costs) || {};
+        const res = await Promise.all([
+          api("/api/runs/" + id + "/metrics"), api("/api/runs/" + id + "/equity"),
+          api("/api/runs/" + id + "/trades"), api("/api/runs/" + id + "/decisions"),
+          api("/api/runs/" + id + "/positions")
+        ]);
+        this.metrics = res[0];
+        this.equity = res[1];
+        this.trades = res[2];
+        this.decisions = res[3];
+        this.posDates = res[4].dates || [];
+        this.posDate = this.posDates.length ? this.posDates[this.posDates.length - 1] : "";
+        this.posRows = res[4].rows || [];
+        const strategy = this.equity.filter(e => e.seriesId === "strategy");
+        const bench = this.equity.filter(e => e.seriesId === "benchmark");
+        this.equityRecent = strategy.slice(-30).reverse().map(e => {
+          const b = this.equity.find(x => x.seriesId === "benchmark" && x.tradeDate === e.tradeDate);
+          return { date: e.tradeDate, navS: e.nav, navB: b ? b.nav : null, cash: e.cash, pv: e.positionValue };
+        });
+        this.loading = false;
+        await this.$nextTick();
+        const short = strategy.length <= 40;   // 短区间按"月-日"标注,长区间按"年-月"
+        if (this.$refs.navChart) renderLineChart(this.$refs.navChart, {
+          series: [
+            { name: "策略", color: "#0F766E", points: strategy.map(e => ({ label: e.tradeDate, value: e.nav })) },
+            { name: "基准", color: "#475569", dash: true, points: bench.map(e => ({ label: e.tradeDate, value: e.nav })) }
+          ],
+          height: this.chartHeight, legend: false,
+          xLabel: short ? (d => d.slice(5)) : (d => d.slice(0, 7)), yFmt: v => v.toFixed(3)
+        });
+      } catch (e) {
+        this.error = e.message;
+      } finally {
+        this.loading = false;
+      }
+    },
     mval(key, series) {
       const m = this.metrics.find(x => x.metric === key && x.seriesId === series);
       return m ? m.metricValue : null;
+    },
+    nextTab(step) {
+      const keys = this.tabList.map(t => t.key);
+      this.tab = keys[(keys.indexOf(this.tab) + step + keys.length) % keys.length];
+      this.$nextTick(() => {
+        const el = this.$refs.tabs && this.$refs.tabs.querySelector('[aria-selected="true"]');
+        if (el) el.focus();
+      });
     },
     async loadPositions() {
       if (!this.posDate) return;
@@ -963,60 +1034,80 @@ const ResultPage = {
       const t = this.strategyTrades[i];
       if (t) this.explainDate((t.signalTime || "").slice(0, 10), t);
     },
+    // 交易解释:信号时间与触发条件 → 因子排名与目标权重 → 次日实际执行
     async explainDate(date, trade) {
+      const show = (v, f) => (v === null || v === undefined) ? "NA" : f(v);
       try {
         const d = await api("/api/runs/" + this.run.runId + "/explain?date=" + date);
         const dec = d.decision || {};
-        let html = "";
+        let html = "<h4>信号时间与触发条件</h4><p class='mt0'>信号 " + esc(date) + " 15:05";
+        if (dec.execution_date) html += "，成交 " + esc(dec.execution_date) + " 09:30";
+        html += (dec.momentum_window !== undefined ? "，动量窗口 " + dec.momentum_window + " 日" : "") + "。</p>";
+        if (dec.factor_value !== undefined) {
+          const state = dec.target_state === "hold" ? "持有" : (dec.target_state === "cash" ? "现金" : "不产生新目标");
+          html += "<p>均线比值 <b class='num'>" + show(dec.factor_value, v => fmtNum(v, 6)) + "</b>，目标状态：" + state
+            + (dec.note ? "。" + esc(dec.note) : "") + "</p>";
+        }
         if (trade) {
-          html += '<div class="callout"><b>这笔交易</b>:' + (trade.side === "buy" ? "买入" : "卖出") + " " + esc(trade.assetId)
-            + " " + fmtQty(trade.quantity) + " 份 @ " + fmtNum(trade.price, 4) + "(含滑点),手续费 " + fmtMoney(trade.fee)
-            + " 元<br><b>原因</b>:" + esc(trade.reason) + "</div>";
+          html += "<div class='callout'>" + (trade.side === "buy" ? "买入" : "卖出") + " <b>" + esc(trade.assetId)
+            + "</b> " + fmtQty(trade.quantity) + " 份，成交价 " + show(trade.price, v => fmtNum(v, 4))
+            + "，手续费 " + show(trade.fee, v => fmtMoney(v)) + " 元<br>" + esc(trade.reason) + "</div>";
         }
         if (dec.defensive && dec.defensive.triggered) {
-          html += '<div class="callout warn"><b>防御触发</b>:' + esc(dec.defensive.reason || "") + "</div>";
+          html += "<div class='callout warn'>防御触发：" + esc(dec.defensive.reason || "") + "</div>";
         }
-        const assets = dec.assets || [];
+        // 按动量排名展示;未启用趋势过滤时不显示均线比值列(此时全为 NA)
+        const assets = (dec.assets || []).slice().sort((x, y) => (x.rank || 999) - (y.rank || 999));
         if (assets.length) {
-          html += '<p class="mt0"><b>' + esc(date) + " 收盘后候选池因子值</b>(W=" + (dec.momentum_window || "-") + ")</p>";
-          html += '<div class="tbl-wrap" style="max-height:280px"><table class="tbl"><thead><tr><th>资产</th><th>动量</th><th>均线比值</th><th>可入选</th><th>排名</th></tr></thead><tbody>';
+          const weight = {};
+          (dec.targets || []).forEach(t => { weight[t.code] = t.weight; });
+          const ma = !!dec.trend_filter;
+          html += "<h4>因子排名与目标权重</h4><div class='tbl-wrap' style='max-height:280px'><table class='tbl'><thead><tr><th>资产</th>"
+            + "<th class='num'>动量</th>" + (ma ? "<th class='num'>均线比值</th>" : "")
+            + "<th>可入选</th><th class='num'>排名</th><th class='num'>目标权重</th></tr></thead><tbody>";
           for (const a of assets) {
-            const isT = (dec.targets || []).some(x => x.code === a.code);
-            html += "<tr" + (isT ? ' style="background:#e6f5f2"' : "") + "><td><b>" + esc(a.code) + "</b>"
-              + (isT ? ' <span class="badge teal">目标</span>' : "") + "</td>"
-              + '<td class="num">' + (a.momentum === null || a.momentum === undefined ? "NA" : fmtPct(a.momentum, 2)) + "</td>"
-              + '<td class="num">' + (a.ma_ratio === null || a.ma_ratio === undefined ? "-" : fmtNum(a.ma_ratio, 4)) + "</td>"
-              + "<td>" + (a.eligible ? "✓" : "✗") + "</td><td class='num'>" + (a.rank || "-") + "</td></tr>";
+            const w = weight[a.code];
+            html += "<tr><td><b>" + esc(a.code) + "</b>" + (w !== undefined ? " <span class='badge teal'>目标</span>" : "") + "</td>"
+              + "<td class='num'>" + show(a.momentum, v => fmtPct(v, 2)) + "</td>"
+              + (ma ? "<td class='num'>" + show(a.ma_ratio, v => fmtNum(v, 4)) + "</td>" : "")
+              + "<td>" + (a.eligible ? "是" : "否") + "</td>"
+              + "<td class='num'>" + (a.rank || "-") + "</td>"
+              + "<td class='num'>" + (w === undefined ? "0%" : fmtPct(w, 0)) + "</td></tr>";
           }
           html += "</tbody></table></div>";
         }
-        const targets = dec.targets || [];
-        html += "<p style='margin-top:10px'><b>目标组合</b>:" + (targets.length
-          ? targets.map(t => esc(t.code) + "(" + fmtPct(t.weight, 0) + (t.momentum !== undefined && t.momentum !== null ? ",动量 " + fmtPct(t.momentum, 2) : "") + ")").join("、")
-          : "空仓(现金)") + "</p>";
         const ex = d.trades || [];
-        if (ex.length) {
-          html += "<p class='mt0'><b>" + esc(dec.execution_date || "") + " 开盘实际执行</b>:</p><ul class='small' style='margin-top:4px'>";
+        html += "<h4>次日实际执行</h4>";
+        if (!ex.length) {
+          html += "<p class='muted'>没有产生成交。</p>";
+        } else {
+          html += "<div class='tbl-wrap'><table class='tbl'><thead><tr><th>资产</th><th>方向</th><th class='num'>数量</th>"
+            + "<th class='num'>成交价</th><th class='num'>手续费</th><th>状态</th><th>说明</th></tr></thead><tbody>";
           for (const t of ex) {
-            html += "<li>" + (t.side === "buy" ? "买入" : "卖出") + " " + esc(t.assetId) + " " + fmtQty(t.quantity)
-              + " 份 @ " + fmtNum(t.price, 4) + ",手续费 " + fmtMoney(t.fee) + " —— " + esc(t.reason) + "</li>";
+            html += "<tr><td><b>" + esc(t.assetId) + "</b></td><td>" + (t.side === "buy" ? "买入" : "卖出") + "</td>"
+              + "<td class='num'>" + fmtQty(t.quantity) + "</td>"
+              + "<td class='num'>" + show(t.price, v => fmtNum(v, 4)) + "</td>"
+              + "<td class='num'>" + show(t.fee, v => fmtMoney(v)) + "</td>"
+              + "<td>" + (t.status === "FILLED" ? "成交" : "未成交") + "</td><td class='wrap small'>" + esc(t.reason) + "</td></tr>";
           }
-          html += "</ul>";
+          html += "</tbody></table></div>";
         }
-        openModal("交易解释 · " + esc(date) + " 信号", html, 780);
+        openModal("交易解释 · " + esc(date), html, 820);
       } catch (e) { toast(e.message, "err"); }
     },
     rerunZero() {
-      if (!confirm("将以相同区间与参数、零费率零滑点重新运行(新 run_id),用于成本影响分析。继续?")) return;
+      closeMenus();
+      if (!confirm("以相同区间和参数、零费率零滑点重新运行（生成新的 run_id），用于成本影响分析。继续？")) return;
       const body = { configId: this.run.strategyConfigId, start: this.run.startDate, end: this.run.endDate,
-        purpose: "historical_backtest", zeroCost: true, note: "附加对照:零费率零滑点(对照 " + this.run.runId + ")" };
+        purpose: "historical_backtest", zeroCost: true, note: "附加对照：零费率零滑点（对照 " + this.run.runId + "）" };
       api("/api/backtest/run", { method: "POST", body: JSON.stringify(body) })
         .then(res => {
-          if (res.status === "SUCCESS") { toast("零成本对照运行成功:" + res.runId, "ok"); this.$root.goResult(res.runId); }
-          else toast("重跑失败:" + res.message, "err");
+          if (res.status === "SUCCESS") { toast("零成本对照运行成功", "ok"); this.$root.goResult(res.runId); }
+          else toast("重跑失败：" + res.message, "err");
         })
         .catch(e => toast(e.message, "err"));
     },
+    aiAsk(q) { closeMenus(); this.$root.openAi(); this.$root.sendAi(q); },
     aiContext() {
       if (!this.run) return "【结果页】数据加载中";
       let s = "【回测结果页】run_id=" + this.run.runId + " " + this.run.startDate + "~" + this.run.endDate
@@ -1041,39 +1132,38 @@ const HistoryPage = {
   template: `
   <div>
     <div class="card">
-      <div style="display:flex;gap:12px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
-        <button class="btn" @click="compare">⇄ 对比勾选的两条运行</button>
-        <span class="small muted">适合主方案 vs 零成本对照、参数敏感性等附加比较</span>
-      </div>
-      <div class="tbl-wrap">
-        <table class="tbl"><thead><tr>
-          <th></th><th>run_id</th><th>目的</th><th>数据</th><th>区间</th><th>策略版本</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th>
+      <div class="card-head"><h3>运行记录</h3>
+        <button class="btn sm" :disabled="loading" @click="compare">对比所选</button></div>
+      <div v-if="error" class="callout err">{{ error }} <button class="link-btn" @click="load">重试</button></div>
+      <div v-if="runs.length" class="tbl-wrap">
+        <table class="tbl dense"><thead><tr>
+          <th>对比</th><th>run_id</th><th>区间</th><th>类型</th><th>状态</th><th>备注</th><th>创建时间</th><th>操作</th>
         </tr></thead><tbody>
-          <tr v-for="r in runs" :key="r.runId">
-            <td><input type="checkbox" class="cmp" :value="r.runId" style="accent-color:#0f766e"></td>
-            <td class="mono"><a :href="'#/result?run_id=' + r.runId">{{ r.runId }}</a></td>
-            <td v-html="purposeBadge(r)"></td>
-            <td>{{ r.dataType === 'synthetic' ? '虚构' : '真实' }}</td>
-            <td>{{ (r.startDate || '-') + ' ~ ' + (r.endDate || '-') }}</td>
-            <td>{{ r.strategyCode }} v{{ r.strategyVersion }}</td>
-            <td v-html="statusBadge(r.status)"></td>
-            <td class="wrap small">{{ r.note || '-' }}</td>
-            <td class="muted">{{ (r.createdAt || '').replace('T',' ').slice(0,19) }}</td>
-            <td>
-              <a class="btn sm" :href="'#/result?run_id=' + r.runId">查看</a>
-              <a class="btn sm ghost" :href="'/api/runs/' + r.runId + '/export-all'">导出ZIP</a>
-              <button class="btn sm danger" @click="delRun(r)">删除</button>
-            </td>
+          <tr v-for="r in runs" :key="r.runId" :class="{ picked: isPicked(r.runId) }">
+            <td><input type="checkbox" class="cmp" :value="r.runId" :aria-label="'选择 ' + r.runId + ' 参与对比'"></td>
+            <td class="mono"><a :href="'#/result?run_id=' + r.runId">{{ r.runId }}</a>
+              <span v-if="cmp.show && cmp.a === r.runId" class="badge navy">A</span>
+              <span v-if="cmp.show && cmp.b === r.runId" class="badge navy">B</span></td>
+            <td class="num-l">{{ (r.startDate || '-') + ' 至 ' + (r.endDate || '-') }}</td>
+            <td>{{ r.purpose === 'sample_check' ? '样本复算' : '历史回测' }}<span class="muted small gap">{{ r.dataType === 'synthetic' ? '虚构数据' : '真实数据' }}</span></td>
+            <td><span :class="'badge ' + (r.status === 'SUCCESS' ? 'green' : (r.status === 'FAILED' ? 'red' : 'amber'))">{{ statusText(r.status) }}</span></td>
+            <td class="ellipsis" :title="r.note">{{ r.note || '-' }}</td>
+            <td class="num-l muted">{{ (r.createdAt || '').replace('T', ' ').slice(0, 16) }}</td>
+            <td><a class="link-btn" :href="'#/result?run_id=' + r.runId">查看</a>
+              <a class="link-btn" :href="'/api/runs/' + r.runId + '/export-all'">ZIP</a>
+              <button class="link-btn danger" @click="delRun(r)">删除</button></td>
           </tr>
         </tbody></table>
       </div>
+      <div v-else-if="!loading && !error" class="empty">暂无运行记录</div>
     </div>
 
     <div class="card" v-if="cmp.show">
-      <h3><span class="dot"></span>运行对比:{{ cmp.a }} vs {{ cmp.b }}</h3>
-      <div ref="cmpChart"></div>
-      <div class="tbl-wrap" style="margin-top:12px">
-        <table class="tbl"><thead><tr><th>指标(策略序列)</th><th>{{ cmp.a }}</th><th>{{ cmp.b }}</th><th>差值(A-B)</th></tr></thead>
+      <div class="card-head"><h3>运行对比</h3>
+        <div class="legend"><span class="lg"><i class="line"></i>A {{ cmp.a }}</span><span class="lg"><i class="line dashed"></i>B {{ cmp.b }}</span></div></div>
+      <div ref="cmpChart" class="board-body"></div>
+      <div class="tbl-wrap" style="margin-top:16px">
+        <table class="tbl"><thead><tr><th>指标（策略）</th><th class="num">A</th><th class="num">B</th><th class="num">差值（A − B）</th></tr></thead>
         <tbody><tr v-for="row in cmpRows" :key="row.key">
           <td>{{ row.label }}</td>
           <td class="num">{{ row.a === null || row.a === undefined ? 'NA' : row.fmt(row.a) }}</td>
@@ -1083,44 +1173,49 @@ const HistoryPage = {
       </div>
     </div>
   </div>`,
-  data() { return { runs: [], cmp: { show: false, a: "", b: "" }, cmpRows: [] }; },
+  data() { return { runs: [], loading: true, error: "", cmp: { show: false, a: "", b: "" }, cmpRows: [] }; },
+  computed: {
+    chartHeight() { return window.innerWidth < 768 ? 260 : 320; }
+  },
   async mounted() { await this.load(); },
   methods: {
-    purposeBadge(r) { return r.purpose === "sample_check" ? '<span class="badge amber">样本复算</span>' : '<span class="badge teal">历史回测</span>'; },
-    statusBadge(s) { return s === "SUCCESS" ? '<span class="badge green">SUCCESS</span>' : '<span class="badge red">' + esc(s) + "</span>"; },
+    statusText,
+    isPicked(id) { return this.cmp.show && (this.cmp.a === id || this.cmp.b === id); },
     async load() {
-      try { this.runs = await api("/api/runs"); } catch (e) { toast(e.message, "err"); }
+      this.loading = true;
+      this.error = "";
+      try { this.runs = await api("/api/runs"); }
+      catch (e) { this.error = "运行记录加载失败：" + e.message; }
+      finally { this.loading = false; }
     },
     async delRun(r) {
-      if (!confirm("确认删除运行 " + r.runId + "?数据库记录与导出文件将一并删除。")) return;
+      if (!confirm("确认删除运行 " + r.runId + "？数据库记录与导出文件会一并删除。")) return;
       try {
         await api("/api/runs/" + r.runId, { method: "DELETE" });
         toast("已删除 " + r.runId, "ok");
-        this.load();
+        if (this.isPicked(r.runId)) { this.cmp = { show: false, a: "", b: "" }; this.cmpRows = []; }
+        await this.load();
       } catch (e) { toast(e.message, "err"); }
     },
     async compare() {
       const checked = Array.from(document.querySelectorAll(".cmp:checked")).map(c => c.value);
-      if (checked.length !== 2) { toast("请恰好勾选两条运行记录", "err"); return; }
+      if (checked.length !== 2) { toast("选择两次运行进行对比", "err"); return; }
       try {
-        const [eqA, eqB] = await Promise.all(checked.map(id => api("/api/runs/" + id + "/equity")));
-        const [metA, metB] = await Promise.all(checked.map(id => api("/api/runs/" + id + "/metrics")));
-        this.cmp = { show: true, a: checked[0], b: checked[1] };
-        this.$nextTick(() => {
-          renderLineChart(this.$refs.cmpChart, {
-            series: [
-              { name: checked[0] + "(策略)", color: "#0f766e", points: eqA.filter(e => e.seriesId === "strategy").map(e => ({ label: e.tradeDate.slice(5), value: e.nav })) },
-              { name: checked[1] + "(策略)", color: "#d97706", points: eqB.filter(e => e.seriesId === "strategy").map(e => ({ label: e.tradeDate.slice(5), value: e.nav })) }
-            ],
-            height: 300, yFmt: v => v.toFixed(3)
-          });
-        });
+        const res = await Promise.all([
+          api("/api/runs/" + checked[0] + "/equity"), api("/api/runs/" + checked[1] + "/equity"),
+          api("/api/runs/" + checked[0] + "/metrics"), api("/api/runs/" + checked[1] + "/metrics")
+        ]);
+        const rowsOf = eq => eq.filter(e => e.seriesId === "strategy").map(e => ({ date: e.tradeDate, nav: e.nav }));
+        const series = alignSeries([
+          { name: "A", color: "#0F766E", rows: rowsOf(res[0]) },
+          { name: "B", color: "#475569", dash: true, rows: rowsOf(res[1]) }
+        ]);
         const byKey = m => {
           const o = {};
-          m.filter(x => x.seriesId === "strategy").forEach(x => o[x.metric] = x.metricValue);
+          m.filter(x => x.seriesId === "strategy").forEach(x => { o[x.metric] = x.metricValue; });
           return o;
         };
-        const ka = byKey(metA), kb = byKey(metB);
+        const ka = byKey(res[2]), kb = byKey(res[3]);
         const order = ["total_return", "annual_return", "annual_vol", "max_drawdown", "sharpe", "turnover", "trade_count", "total_cost"];
         this.cmpRows = order.filter(k => ka[k] !== undefined || kb[k] !== undefined).map(k => {
           const a = ka[k], b = kb[k];
@@ -1134,6 +1229,15 @@ const HistoryPage = {
           }
           return { key: k, label: METRIC_LABELS[k] || k, a, b, fmt: METRIC_FMT[k] || (v => fmtNum(v)), diff };
         });
+        this.cmp = { show: true, a: checked[0], b: checked[1] };
+        await this.$nextTick();
+        if (!this.$refs.cmpChart) return;
+        const n = series.length ? series[0].points.length : 0;
+        renderLineChart(this.$refs.cmpChart, {
+          series, height: this.chartHeight, legend: false,
+          xLabel: n <= 40 ? (d => d.slice(5)) : (d => d.slice(0, 7)), yFmt: v => v.toFixed(3)
+        });
+        this.$refs.cmpChart.scrollIntoView({ behavior: "smooth", block: "nearest" });
       } catch (e) { toast(e.message, "err"); }
     },
     aiContext() {
@@ -1144,15 +1248,26 @@ const HistoryPage = {
   }
 };
 
+/* 两条区间不同的净值按日期对齐:缺失日记 null,避免按序号错位比较 */
+function alignSeries(list) {
+  const dates = Array.from(new Set([].concat.apply([], list.map(x => x.rows.map(r => r.date))))).sort();
+  return list.map(x => {
+    const m = {};
+    x.rows.forEach(r => { m[r.date] = r.nav; });
+    return { name: x.name, color: x.color, dash: x.dash,
+      points: dates.map(d => ({ label: d, value: m[d] === undefined ? null : m[d] })) };
+  });
+}
+
 /* ================= 根组件 + 哈希路由 ================= */
 const ROUTES = {
-  overview: { view: OverviewView, title: "概览", sub: "课题 T03.01 相对动量轮动 · 数据/引擎/样本复算状态一览" },
-  data: { view: DataPage, title: "数据管理", sub: "内置东方财富行情抓取(日频 · 前复权),可添加任意 ETF 代码,数据落盘可复现" },
-  factors: { view: FactorsPage, title: "因子库", sub: "A 阶段《因子清单》22 列规范 · 因子表版本 v1 · 定义来源可查" },
-  strategy: { view: StrategyPage, title: "策略配置", sub: "etf_mom_rotation · 12 项规则参数化,可另存版本并导出 B_主策略.json" },
-  backtest: { view: BacktestPage, title: "回测运行", sub: "历史回测(真实数据)与 B 样本复算(虚构数据)独立运行,各有 run_id" },
-  result: { view: ResultPage, title: "回测结果", sub: "净值对比 · 指标 · 持仓 · 交易解释 · 六件套导出" },
-  history: { view: HistoryPage, title: "运行历史", sub: "每次运行(含失败与附加实验)独立 run_id,可勾选对比" }
+  overview: { view: OverviewView, title: "概览" },
+  data: { view: DataPage, title: "数据管理" },
+  factors: { view: FactorsPage, title: "因子库" },
+  strategy: { view: StrategyPage, title: "策略配置" },
+  backtest: { view: BacktestPage, title: "回测运行" },
+  result: { view: ResultPage, title: "回测结果" },
+  history: { view: HistoryPage, title: "运行历史" }
 };
 
 function parseHash() {
@@ -1167,6 +1282,7 @@ const app = Vue.createApp({
   data() {
     return {
       route: parseHash(),
+      ready: false, navOpen: false,
       modal: MODAL,
       ai: { open: false, configured: true, loading: false, input: "", msgs: [],
         permission: true, pos: null, dragging: false, dragOff: { x: 0, y: 0 }, pending: null }
@@ -1175,17 +1291,17 @@ const app = Vue.createApp({
   computed: {
     navItems() {
       return [
-        { name: "overview", icon: "◧", label: "概览" },
-        { name: "data", icon: "▤", label: "数据管理" },
-        { name: "factors", icon: "ƒ", label: "因子库" },
-        { name: "strategy", icon: "⚙", label: "策略配置" },
-        { name: "backtest", icon: "▶", label: "回测运行" },
-        { name: "history", icon: "≡", label: "运行历史" }
+        { name: "overview", icon: "grid", label: "概览" },
+        { name: "data", icon: "database", label: "数据管理" },
+        { name: "factors", icon: "function", label: "因子库" },
+        { name: "strategy", icon: "sliders", label: "策略配置" },
+        { name: "backtest", icon: "play", label: "回测运行" },
+        { name: "history", icon: "list", label: "运行历史" }
       ];
     },
     currentView() { return ROUTES[this.route.name].view; },
     currentTitle() { return ROUTES[this.route.name].title; },
-    currentSub() { return ROUTES[this.route.name].sub; },
+    aiState() { return this.ai.configured ? (this.ai.permission ? "可操作" : "仅分析") : "未配置"; },
     viewKey() { return this.route.name + ":" + JSON.stringify(this.route.params); },
     panelStyle() {
       return this.ai.pos
@@ -1207,24 +1323,44 @@ const app = Vue.createApp({
     }
   },
   mounted() {
-    window.addEventListener("hashchange", () => { this.route = parseHash(); });
+    window.addEventListener("hashchange", () => { this.route = parseHash(); this.navOpen = false; });
     api("/api/ai/configured").then(r => { this.ai.configured = !!r.configured; }).catch(() => {});
     if (parseHash().params.ai === "1") this.ai.open = true;   // #/overview?ai=1 直接打开面板(演示用)
-    // 确认卡片按钮事件委托(v-html 内按钮无法直接绑定)
+    this.$nextTick(() => { this.ready = true; });   // 先挂载外壳,结果页才能把操作传送进顶栏
     document.addEventListener("click", e => {
       const b = e.target.closest("[data-ai-act]");
-      if (!b) return;
-      if (b.dataset.aiAct === "confirm") this.confirmAi();
-      else if (b.dataset.aiAct === "cancel") this.cancelAi();
-      else if (b.dataset.aiAct === "dl") {
-        const a = document.createElement("a");
-        a.href = b.dataset.aiUrl;
-        a.download = "";
-        a.click();
+      if (b) {
+        // 确认卡片内的按钮由 v-html 生成,这里统一委托
+        if (b.dataset.aiAct === "confirm") this.confirmAi();
+        else if (b.dataset.aiAct === "cancel") this.cancelAi();
+        else if (b.dataset.aiAct === "dl") {
+          const a = document.createElement("a");
+          a.href = b.dataset.aiUrl;
+          a.download = "";
+          a.click();
+        }
+        return;
       }
+      // 点击其他位置时收起菜单与窄屏导航
+      if (!e.target.closest("details.menu")) closeMenus();
+      if (this.navOpen && !e.target.closest(".sheet-nav") && !e.target.closest(".nav-toggle")) this.navOpen = false;
+    });
+    document.addEventListener("keydown", e => {
+      if (e.key !== "Escape") return;
+      if (MODAL.open) closeModal();
+      this.navOpen = false;
     });
   },
+  watch: {
+    "modal.open"(v) {
+      if (!v) return;
+      this.$nextTick(() => { if (this.$refs.modalCard) this.$refs.modalCard.focus(); });
+    }
+  },
   methods: {
+    // 模板渲染时不能直接访问全局函数,这里注册为组件方法
+    closeModal,
+    closeMenus,
     go(name) { location.hash = "#/" + name; },
     goResult(runId) { location.hash = "#/result?run_id=" + runId; },
     currentContext() {
@@ -1277,7 +1413,7 @@ const app = Vue.createApp({
       a = a || {};
       const readOnly = name === "get_run_detail";
       if (!readOnly && name !== "navigate" && !this.ai.permission) {
-        return "权限未开启:未执行「" + name + "」(点击面板右上角 🔓 开启)";
+        return "权限未开启:未执行「" + name + "」(点击面板右上角的锁形按钮开启)";
       }
       try {
         switch (name) {
@@ -1399,7 +1535,7 @@ const app = Vue.createApp({
         }
         this.finishAi(res);
       } catch (e) {
-        this.ai.msgs.push({ role: "ai", html: '<span class="muted">⚠ ' + esc(e.message) + "</span>" });
+        this.ai.msgs.push({ role: "ai", html: '<span class="muted">' + esc(e.message) + "</span>" });
       } finally {
         this.ai.loading = false;
         this.scrollAi();
@@ -1412,7 +1548,7 @@ const app = Vue.createApp({
       for (const tc of (res.toolCalls || [])) {
         const out = await this.executeTool(tc.name, tc.arguments);
         results.push({ id: tc.id, content: out });
-        this.ai.msgs.push({ role: "ai", html: "🔧 <b>已执行</b> · " + mdLite(String(out).slice(0, 400)) });
+        this.ai.msgs.push({ role: "ai", html: "<b>已执行</b>：" + mdLite(String(out).slice(0, 400)) });
         this.scrollAi();
       }
       const backendResults = res.backendResults || [];
@@ -1425,8 +1561,7 @@ const app = Vue.createApp({
     noteBackend(res) {
       const bc = res.backendToolCalls || [];
       for (const t of bc) {
-        this.ai.msgs.push({ role: "ai", html: "🧮 <b>服务端计算完成</b> · " + esc(TOOL_LABELS[t.name] || t.name)
-          + "<span class='muted'>(数值由 Java 业务层产生)</span>" });
+        this.ai.msgs.push({ role: "ai", html: "<b>已计算</b>：" + esc(TOOL_LABELS[t.name] || t.name) });
       }
       // 报告生成完毕提供下载
       for (const t of bc) {
@@ -1435,7 +1570,7 @@ const app = Vue.createApp({
           const m = br ? String(br.content).match(/\/api\/runs\/[\w]+\/export\/report\.md/) : null;
           if (m) {
             this.ai.msgs.push({ role: "ai",
-              html: "<button class='btn sm' data-ai-act='dl' data-ai-url='" + m[0] + "'>⬇ 下载 report.md</button>"
+              html: "<button class='btn sm' data-ai-act='dl' data-ai-url='" + m[0] + "'>下载 report.md</button>"
                 + " &nbsp;<a class='small' href='" + m[0] + "' target='_blank'>在新窗口打开</a>" });
           }
         }
@@ -1451,10 +1586,10 @@ const app = Vue.createApp({
           + "<span>" + esc(TOOL_LABELS[t.name] || t.name) + "</span>"
           + "<span class='muted small mono'>" + esc(JSON.stringify(t.arguments || {})).slice(0, 120) + "</span></div>";
       }
-      return "<div class='ai-confirm'><b>🔐 操作确认</b> —— AI 请求执行以下操作:<div style='margin:8px 0'>"
-        + rows + "</div><div class='small muted' style='margin-bottom:8px'>持久化/联网操作需你确认;确认后继续,取消则告知 AI 未执行。</div>"
-        + "<button class='btn sm' data-ai-act='confirm'>✓ 确认执行</button> "
-        + "<button class='btn sm danger' data-ai-act='cancel'>✕ 取消</button></div>";
+      return "<div class='ai-confirm'><b>操作确认</b>：AI 请求执行以下操作<div style='margin:8px 0'>"
+        + rows + "</div><div class='toolbar' style='margin-top:10px'>"
+        + "<button class='btn sm' data-ai-act='confirm'>确认执行</button>"
+        + "<button class='btn sm ghost' data-ai-act='cancel'>取消</button></div>";
     },
     async confirmAi() {
       const p = this.ai.pending;
@@ -1477,7 +1612,7 @@ const app = Vue.createApp({
         }
         this.finishAi(res);
       } catch (e) {
-        this.ai.msgs.push({ role: "ai", html: '<span class="muted">⚠ ' + esc(e.message) + "</span>" });
+        this.ai.msgs.push({ role: "ai", html: '<span class="muted">' + esc(e.message) + "</span>" });
       } finally {
         this.ai.loading = false;
         this.scrollAi();
@@ -1498,7 +1633,7 @@ const app = Vue.createApp({
         });
         this.finishAi(res);
       } catch (e) {
-        this.ai.msgs.push({ role: "ai", html: '<span class="muted">⚠ ' + esc(e.message) + "</span>" });
+        this.ai.msgs.push({ role: "ai", html: '<span class="muted">' + esc(e.message) + "</span>" });
       } finally {
         this.ai.loading = false;
         this.scrollAi();
@@ -1521,4 +1656,39 @@ const app = Vue.createApp({
     }
   }
 });
+/* 线性图标(24 网格,描边 1.7) */
+const ICONS = {
+  trend: '<path d="M3.5 16.5l5-5 3.5 3.5 8.5-8.5"/><path d="M14.5 6.5h6v6"/>',
+  grid: '<rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>',
+  database: '<ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v6.5c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V5.5"/><path d="M4.5 12v6.5c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V12"/>',
+  "function": '<path d="M15.5 4.5h-2c-1.7 0-2.7 1-3 2.7l-1.8 10.3c-.3 1.5-1.1 2-2.2 2"/><path d="M6.5 10h7.5"/>',
+  sliders: '<path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h9M17 17h3"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="15" cy="17" r="2"/>',
+  play: '<path d="M8 5.5v13l10.5-6.5z"/>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="4.5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="4.5" cy="18" r="1" fill="currentColor" stroke="none"/>',
+  spark: '<path d="M11 3.5l1.9 4.9 4.9 1.9-4.9 1.9L11 17.1 9.1 12.2 4.2 10.3l4.9-1.9z"/><path d="M18.5 14.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/>',
+  download: '<path d="M12 4.5v10.5M7.5 10.5l4.5 4.5 4.5-4.5"/><path d="M5 19.5h14"/>',
+  refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4v4.5H15"/>',
+  save: '<path d="M5.5 5.5h10.5l2.5 2.5v10.5h-13z"/><path d="M8.5 5.5v3.5h6V5.5"/><rect x="8.5" y="13" width="7" height="5"/>',
+  up: '<path d="M3.5 16.5l5-5 3.5 3.5 8.5-8.5"/><path d="M14.5 6.5h6v6"/>',
+  down: '<path d="M3.5 7.5l5 5 3.5-3.5 8.5 8.5"/><path d="M14.5 17.5h6v-6"/>',
+  bars: '<path d="M6 19.5v-7M12 19.5v-13M18 19.5v-10"/>',
+  coins: '<ellipse cx="12" cy="6.5" rx="7" ry="3"/><path d="M5 6.5v5.5c0 1.7 3.1 3 7 3s7-1.3 7-3V6.5"/><path d="M5 12v5.5c0 1.7 3.1 3 7 3s7-1.3 7-3V12"/>',
+  layers: '<path d="M12 3.5l8.5 4.5L12 12.5 3.5 8z"/><path d="M4.5 12.5L12 16.5l7.5-4M4.5 16.5L12 20.5l7.5-4"/>',
+  trash: '<path d="M5 7h14M9.5 7V4.5h5V7M7 7l1 12.5h8L17 7"/>',
+  lock: '<rect x="5.5" y="10.5" width="13" height="9.5" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>',
+  unlock: '<rect x="5.5" y="10.5" width="13" height="9.5" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 6.6-1.6"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  send: '<path d="M20 4.5L10 14.5"/><path d="M20 4.5l-6 15-4-5-5-4z"/>',
+  chevron: '<path d="M9 5.5l6.5 6.5L9 18.5"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  menu: '<path d="M5 7h14M5 12h14M5 17h14"/>'
+};
+const Icon = {
+  props: { name: { type: String, required: true }, size: { type: [Number, String], default: 18 } },
+  computed: { path() { return ICONS[this.name] || ""; } },
+  template: `<svg class="ico" :width="size" :height="size" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"
+    v-html="path"></svg>`
+};
+app.component("v-icon", Icon);
 app.mount("#app");

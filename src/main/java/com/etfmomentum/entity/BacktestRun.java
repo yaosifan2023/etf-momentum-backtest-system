@@ -24,7 +24,7 @@ public class BacktestRun {
     private Double initialCash;
     private String benchmark;      // 基准说明,如 buy_and_hold(510300)
 
-    @JsonIgnore
+    /** 运行结果说明或失败原因(界面需要向用户展示) */
     private String message;
 
     private String note;

@@ -143,11 +143,17 @@ public class RunController {
 
         List<TradeRecord> trades = new ArrayList<>();
         Object execDate = decision.get("execution_date");
-        if (execDate != null) {
-            for (TradeRecord t : tradeMapper.selectByRunId(runId)) {
-                if (t.getExecutionTime() != null && t.getExecutionTime().startsWith(String.valueOf(execDate))) {
-                    trades.add(t);
-                }
+        for (TradeRecord t : tradeMapper.selectByRunId(runId)) {
+            boolean hit;
+            if (execDate != null) {
+                // 轮动策略:取该成交日实际执行的交易
+                hit = t.getExecutionTime() != null && t.getExecutionTime().startsWith(String.valueOf(execDate));
+            } else {
+                // 样本复算等不记录成交日的决策:取由该信号产生的交易
+                hit = t.getSignalTime() != null && t.getSignalTime().startsWith(d.toString());
+            }
+            if (hit) {
+                trades.add(t);
             }
         }
 

@@ -6,82 +6,84 @@
 <title>ETF 动量轮动 · 因子策略回测系统</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%230f766e'/><path d='M25 65 L45 42 L58 52 L78 28' stroke='%235eead4' stroke-width='9' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 <link rel="stylesheet" href="css/app.css">
-<style>
-.ai-head { cursor: grab; user-select: none; }
-.ai-head:active { cursor: grabbing; }
-</style>
 </head>
 <body>
 <div id="app" v-cloak>
   <div class="layout">
     <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-mark">📈</div>
-        <div>
-          <div class="t1">ETF 动量轮动</div>
-          <div class="t2">因子 · 策略 · 回测系统</div>
-        </div>
-      </div>
-      <nav class="nav">
-        <div v-for="item in navItems" :key="item.name" class="nav-item"
-             :class="{ active: route.name === item.name }" @click="go(item.name)">
-          <i class="ico">{{ item.icon }}</i><span class="txt">{{ item.label }}</span>
-        </div>
+      <a class="brand" href="#/overview" title="ETF 动量轮动">
+        <span class="brand-mark"><v-icon name="trend" :size="20"></v-icon></span>
+        <span class="t1">ETF 动量轮动</span>
+      </a>
+      <nav class="nav" aria-label="主导航">
+        <a v-for="item in navItems" :key="item.name" class="nav-item" :href="'#/' + item.name"
+           :class="{ active: route.name === item.name }" :aria-current="route.name === item.name ? 'page' : null">
+          <v-icon :name="item.icon" :size="18"></v-icon><span class="txt">{{ item.label }}</span>
+        </a>
       </nav>
-      <div class="foot">T03.01 相对动量轮动<br>Vue 3 + Spring Boot + MyBatis<br>课程作业 C · v2.1</div>
     </aside>
 
     <main class="main">
       <div class="topbar">
+        <button class="nav-toggle" type="button" :aria-expanded="navOpen ? 'true' : 'false'"
+                aria-label="展开导航" @click="navOpen = !navOpen">
+          <v-icon name="menu" :size="20"></v-icon>
+        </button>
         <h1>{{ currentTitle }}</h1>
-        <span class="sub">{{ currentSub }}</span>
+        <div id="topbar-extra" class="topbar-extra"></div>
       </div>
-      <component :is="currentView" :key="viewKey" ref="view"></component>
+      <nav v-if="navOpen" class="sheet-nav" aria-label="导航">
+        <a v-for="item in navItems" :key="item.name" :href="'#/' + item.name"
+           :class="{ active: route.name === item.name }" @click="navOpen = false">
+          <v-icon :name="item.icon" :size="18"></v-icon>{{ item.label }}</a>
+      </nav>
+
+      <component v-if="ready" :is="currentView" :key="viewKey" ref="view"></component>
     </main>
   </div>
 
   <!-- 全局弹窗 -->
-  <div class="modal-mask" v-if="modal.open" @click.self="modal.open = false">
-    <div class="modal" :style="modal.width ? { maxWidth: modal.width + 'px' } : {}">
-      <button class="close-x" style="float:right;border:0;background:none;font-size:18px;cursor:pointer;color:#64748b"
-              @click="modal.open = false">✕</button>
-      <h3 style="margin-top:0" v-html="modal.title"></h3>
+  <div class="modal-mask" v-if="modal.open" @click.self="closeModal">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="详情" tabindex="-1" ref="modalCard"
+         :style="modal.width ? { maxWidth: modal.width + 'px' } : {}">
+      <button class="modal-x" type="button" aria-label="关闭" @click="closeModal"><v-icon name="close" :size="16"></v-icon></button>
+      <h3 v-html="modal.title"></h3>
       <div v-html="modal.body"></div>
     </div>
   </div>
 
   <div id="toasts"></div>
 
-  <!-- AI 助手(悬浮按钮 / 可拖动面板) -->
-  <div class="ai-fab" v-if="!ai.open" @click="openAi" title="AI 分析助手 · 可拖动 · 可执行操作">🤖</div>
-  <div class="ai-panel" v-if="ai.open" ref="aiPanel" :style="panelStyle">
-    <div class="ai-head" @mousedown="aiDragStart">
-      <div class="avatar">🤖</div>
-      <div class="t">
-        <b>AI 研究助手</b>
-        <span>{{ ai.configured ? (ai.permission ? 'GLM · 可分析可操作' : 'GLM · 仅分析(已锁定)') : '未配置密钥' }}
-          · 页面:{{ currentTitle }}{{ route.name === 'result' ? ' · ' + (route.params.run_id || '') : '' }} · ⠿ 拖动</span>
-      </div>
-      <button title="新建对话(清空当前上下文)" @click="newAiChat">🗑</button>
-      <button :title="ai.permission ? '已允许 AI 修改页面表单与执行操作,点击锁定' : 'AI 仅分析,点击放开操作权限'"
-              @click="ai.permission = !ai.permission">{{ ai.permission ? '🔓' : '🔒' }}</button>
-      <button title="收起" @click="ai.open = false">✕</button>
+  <!-- AI 研究助手 -->
+  <button class="ai-fab" v-if="!ai.open" type="button" title="AI 研究助手" aria-label="打开 AI 研究助手" @click="openAi">
+    <v-icon name="spark" :size="26"></v-icon>
+  </button>
+  <section class="ai-panel" v-if="ai.open" ref="aiPanel" :style="panelStyle" aria-label="AI 研究助手">
+    <div class="ai-head" title="按住拖动面板" @mousedown="aiDragStart">
+      <div class="avatar"><v-icon name="spark" :size="17"></v-icon></div>
+      <div class="t"><b>AI 研究助手</b><span>{{ aiState }}</span></div>
+      <button type="button" title="新建对话" @click="newAiChat"><v-icon name="trash" :size="15"></v-icon></button>
+      <button type="button" :title="ai.permission ? '允许操作页面,点击改为仅分析' : '仅分析,点击允许操作页面'"
+              :aria-pressed="ai.permission ? 'true' : 'false'" @click="ai.permission = !ai.permission">
+        <v-icon :name="ai.permission ? 'unlock' : 'lock'" :size="15"></v-icon>
+      </button>
+      <button type="button" title="收起" @click="ai.open = false"><v-icon name="close" :size="15"></v-icon></button>
     </div>
-    <div class="ai-msgs" ref="aiMsgs">
-      <div v-if="!ai.msgs.length" class="msg ai muted" style="color:#94a3b8;font-size:12px">
-        直接输入问题:可让我体检数据、分析回测、生成报告,也可以说「把动量窗口改成60并运行回测」。
-      </div>
+    <div class="ai-msgs" ref="aiMsgs" aria-live="polite">
       <div v-for="(m, i) in ai.msgs" :key="i" class="msg" :class="m.role" v-html="m.html"></div>
       <div v-if="ai.loading" class="msg ai"><span class="typing"><i></i><i></i><i></i></span></div>
     </div>
-    <div class="ai-quick" v-if="suggestions.length && !ai.pending">
-      <button v-for="s in suggestions" :key="s" @click="sendAi(s)">{{ s }}</button>
+    <div class="ai-quick" v-if="suggestions.length && !ai.pending && !ai.msgs.length">
+      <button v-for="s in suggestions" :key="s" type="button" @click="sendAi(s)">{{ s }}</button>
     </div>
     <div class="ai-input">
-      <textarea v-model="ai.input" placeholder="分析数据 / 修改配置 / 执行操作…" @keydown.enter.exact.prevent="sendAi()"></textarea>
-      <button class="ai-send" @click="sendAi()" :disabled="ai.loading">➤</button>
+      <textarea v-model="ai.input" rows="1" placeholder="输入问题" aria-label="向 AI 提问"
+                @keydown.enter.exact.prevent="sendAi()"></textarea>
+      <button class="ai-send" type="button" aria-label="发送" :disabled="ai.loading || ai.pending" @click="sendAi()">
+        <v-icon name="send" :size="18"></v-icon>
+      </button>
     </div>
-  </div>
+  </section>
 </div>
 
 <script src="vendor/vue.global.prod.js"></script>
